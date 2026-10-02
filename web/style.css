@@ -1,0 +1,294 @@
+/* FLOWNIAC web version. Colours follow the control column of Flowniac.py (Panel). */
+:root {
+  --bg: rgb(24 26 31);
+  --fg: rgb(232 234 238);
+  --dim: rgb(140 146 158);
+  --warn: rgb(255 170 60);
+  --track: rgb(58 62 72);
+  --accent: rgb(70 135 215);
+  --box: rgb(44 48 56);
+  --stage: rgb(12 12 12);
+  --ok: rgb(90 200 120);
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  color-scheme: dark;
+  font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--stage);
+  color: var(--fg);
+}
+
+/* ---------------------------------------------------------------- app layout */
+.app {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#panel {
+  flex: none;
+  width: 24rem;
+  overflow-y: auto;
+  padding: 0.7rem 0.8rem 1rem;
+  background: var(--bg);
+}
+
+#stage {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+#stage.landscape {
+  flex-direction: column;
+}
+
+#flow {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+}
+
+#picture {
+  position: relative;
+}
+
+#picture canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#overlay {
+  pointer-events: none;
+}
+
+#message {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--dim);
+}
+
+#message:empty {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- control column */
+.title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 0 0 0.6rem;
+}
+
+.title h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.title span {
+  color: var(--dim);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 7.6rem 1fr 4.6rem;
+  align-items: center;
+  column-gap: 0.5rem;
+  min-height: 1.75rem;
+}
+
+.row[hidden] {
+  display: none;
+}
+
+.row > select,
+.row > .scale {
+  grid-column: 2 / 4;
+}
+
+.row output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.gap {
+  margin-top: 0.55rem;
+}
+
+select,
+button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--box);
+  border: 1px solid transparent;
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.4rem;
+}
+
+select:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover,
+select:hover {
+  border-color: var(--track);
+}
+
+input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 1rem;
+  height: 1rem;
+  margin: 0 0.4rem 0 0;
+}
+
+.scale canvas {
+  display: block;
+  width: 100%;
+  height: 0.6rem;
+  border-radius: 2px;
+}
+
+.ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+}
+
+.note {
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.toggles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  min-height: 1.75rem;
+  align-items: center;
+}
+
+.toggles label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--track);
+  margin: 0.7rem 0 0.5rem;
+}
+
+h2 {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+  font-weight: normal;
+  color: var(--dim);
+}
+
+#results {
+  margin: 0;
+  font: 0.86rem/1.35 var(--mono);
+  white-space: pre;
+}
+
+#results .warn {
+  color: var(--warn);
+}
+
+/* ---------------------------------------------------------------- polar plot */
+#polar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 27rem;
+  padding: 0.6rem;
+  background: var(--bg);
+}
+
+#stage.landscape #polar {
+  flex-direction: row;
+  width: auto;
+  height: 17rem;
+}
+
+#polar[hidden] {
+  display: none;
+}
+
+#polar canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+
+/* ---------------------------------------------------------------- plain pages (parity test) */
+.page {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+  background: var(--bg);
+  min-height: 100vh;
+}
+
+.page table {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.page td,
+.page th {
+  padding: 0.2rem 0.8rem;
+  text-align: left;
+}
+
+.page tr.fail,
+.page .fail {
+  color: var(--warn);
+}
+
+.page .ok {
+  color: var(--ok);
+}
+
+.page tr.note td {
+  color: var(--dim);
+  padding-bottom: 0.8rem;
+}

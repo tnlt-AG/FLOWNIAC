@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FLOWNIAC parity test</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="page">
+  <h1>FLOWNIAC parity test</h1>
+  <p>Runs the cases of <code>parity_reference.json</code> (written by <code>python web/tools/parity.py</code>
+    with Flowniac.py) on the WebGPU solver and compares the forces.</p>
+  <p id="status">Starting ...</p>
+  <table id="parity">
+    <thead><tr><th>Case</th><th>At</th><th></th><th>Python</th><th>Web</th><th>Difference</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <script type="module" src="js/parity.js"></script>
+</body>
+</html>

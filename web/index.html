@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Educational 2D airflow simulator for sails and other shapes (lattice Boltzmann on the GPU).">
+  <title>FLOWNIAC - sail aerodynamics</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body class="app">
+  <aside id="panel" aria-label="Controls"></aside>
+  <main id="stage">
+    <div id="flow">
+      <div id="picture">
+        <canvas id="gpu" aria-label="Air flow around the sail"></canvas>
+        <canvas id="overlay" aria-hidden="true"></canvas>
+      </div>
+      <p id="message">Starting ...</p>
+    </div>
+    <section id="polar" aria-label="Polar plot" hidden></section>
+  </main>
+</body>
+</html>
