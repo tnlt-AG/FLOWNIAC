@@ -2,13 +2,14 @@
 // playback() and arrow_geometry() of Flowniac.py.
 
 import {
-  AVERAGE_CHORDS, CYLINDER, ELEMENT_NAMES, JIB_MAIN, MAST_SAIL, NACA0012, NACA2412, NU_AIR, QUALITY_CELLS,
-  RHO_AIR, SETTLE_CHORDS, SHAPES, SPAN_EFFICIENCY, U_LAT,
+  AVERAGE_CHORDS, CYLINDER, ELEMENT_NAMES, FS_FORM_FACTOR, JIB_MAIN, MAST_SAIL, NACA0012, NACA2412, NU_AIR, PLATE,
+  QUALITY_CELLS, RHO_AIR, SETTLE_CHORDS, SHAPES, SPAN_EFFICIENCY, U_LAT,
 } from "./config.js";
 
 const radians = (deg) => deg * Math.PI / 180;
 
-/** Coefficient sets are arrays of 4 [Cd, Cl] pairs (total, main/body, jib, mast). */
+/** Coefficient sets are arrays of [Cd, Cl] pairs: total, main/body, jib, mast, and total with the drag estimated
+ *  for the full-size boundary layer (fullSizeDrag; the simulated drag where there is no estimate). */
 const scale = (c, k) => c.map(([x, y]) => [x * k, y * k]);
 const sum = (a, b) => a.map(([x, y], e) => [x + b[e][0], y + b[e][1]]);
 
@@ -61,9 +62,50 @@ export class Averager {
   }
 }
 
+/** Length of the main sail's camber line / chord. */
+function arcLength(st) {
+  const m = st.shape === PLATE ? 0.0 : st.camber;
+  const p = st.draft;
+  let len = 0.0;
+  let y0 = 0.0;
+  for (let k = 1; k <= 200; k++) {
+    const x = k / 200;
+    const y = m <= 0.0 ? 0.0 : x < p ? m / (p * p) * (2 * p * x - x * x) : m / ((1 - p) ** 2) * (1 - 2 * p + 2 * p * x - x * x);
+    len += Math.hypot(1 / 200, y - y0);
+    y0 = y;
+  }
+  return len;
+}
+
+/**
+ * Section drag of the full-size boundary layer, estimated: the simulated drag is far too high there (see
+ * config.js). Skin friction of a turbulent boundary layer, Cf = 0.074 Re^-0.2 per side, with the local speed
+ * outside the boundary layer from the pressure beside the cloth (u_e^2 = U^2 (1 - Cp), wall stress ~ u_e^1.8),
+ * none where the lee flow has separated; attached flow adds form drag FS_FORM_FACTOR x friction, separated flow
+ * the simulated (pressure) drag in proportion to the separated part of the lee side.
+ * rhoLee, rhoWind: density beside the main (Solver.surfaceDensity); lee: lee-side flow (Solver.leeProfile).
+ */
+export function fullSizeDrag(st, cdSim, rhoLee, rhoWind, lee) {
+  const f = (rho) => Math.max(1.0 + (2.0 / 3.0) * (1.0 - rho) / (U_LAT * U_LAT), 0.0) ** 0.9;
+  let fl = 0.0;
+  let fw = 0.0;
+  let att = 0;
+  lee.forEach((v, k) => {
+    if (v > 0.0) {
+      fl += f(rhoLee[k]);
+      att += 1;
+    }
+    fw += f(rhoWind[k]);
+  });
+  const re = st.wind * st.width / NU_AIR;
+  const cdf = 0.074 * re ** -0.2 * (fl + fw) / lee.length * arcLength(st) / st.refFraction();
+  const a = att / lee.length;
+  return cdf * (1.0 + FS_FORM_FACTOR * a) + cdSim * (1.0 - a);
+}
+
 /** All numbers shown to the user, from time-averaged 2D coefficients. */
 export function results(st, coeffs) {
-  const [cd, cl] = coeffs[0];
+  const [cd, cl] = st.boundary ? coeffs[4] : coeffs[0];
   const refM = st.refFraction() * st.width;
   const area = refM * st.height;
   const ar = st.height / refM;
@@ -133,6 +175,9 @@ export function resultLines(st, r, avg, sim, info, lee = null) {
     `  ${avg.status()}`,
     `2D section  Cl ${r.cl.toFixed(2)}  Cd ${r.cd.toFixed(3)}  L/D ${fmtLd(r.cl, r.cd)}`,
   ];
+  if (st.boundary) {
+    lines.push(lee !== null ? "  full size (approx.): Cd estimated" : "  full size (approx.): Cd far too high");
+  }
   for (const [name, cl, cd] of r.elements) {
     lines.push(`  ${name.padEnd(4)}      Cl ${cl.toFixed(2)}  Cd ${cd.toFixed(3)}`);
   }
@@ -142,7 +187,8 @@ export function resultLines(st, r, avg, sim, info, lee = null) {
     const attached = 1 - sep.filter(Boolean).length / sep.length;
     lines.push(`${who} flow attached ${(100 * attached).toFixed(0)}% of chord`);
     if (sep.some(Boolean)) {
-      lines.push(`  separated from ${(100 * (sep.indexOf(true) + 0.5) / lee.length).toFixed(0)}% (full size: later)`);
+      const note = st.boundary ? "" : " (full size: later)";
+      lines.push(`  separated from ${(100 * (sep.indexOf(true) + 0.5) / lee.length).toFixed(0)}%${note}`);
     }
   }
   lines.push(`Whole sail  Cd ${r.cd3.toFixed(3)}  L/D ${fmtLd(r.cl, r.cd3)}  (AR ${r.ar.toFixed(1)})`);
@@ -164,7 +210,11 @@ export function resultLines(st, r, avg, sim, info, lee = null) {
     lines.push(`Lift ${r.lift.toFixed(0)} N  Drag ${r.drag3.toFixed(0)} N  (${r.area.toFixed(1)} m²)`);
     lines.push(`  = ${r.drag2.toFixed(0)} N section + ${r.dragi.toFixed(0)} N induced`);
   }
-  lines.push(`Re ${fmtG(r.re, 2)} real, ${fmtG(sim.reSim, 2)} simulated`);
+  if (st.boundary) {
+    lines.push(`Re ${fmtG(r.re, 2)} real, full size (approx.)`);
+  } else {
+    lines.push(`Re ${fmtG(r.re, 2)} real, ${fmtG(sim.reSim, 2)} simulated`);
+  }
   if (st.shape === CYLINDER && r.re > 3e5) lines.push("  real cylinder: drag crisis > Re 3e5");
   if (st.shape === NACA0012 || st.shape === NACA2412) {
     lines.push("Note: thick profiles suffer at low Re");

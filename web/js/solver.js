@@ -8,7 +8,7 @@ import {
   WIND_FROM,
 } from "./config.js";
 import { LUTS } from "./luts.js";
-import { OUT_FORCE, OUT_LEE, OUT_SIZE, OUT_TT, PARAMS, TT_STRIDE, buildKernels } from "./shaders.js";
+import { OUT_FORCE, OUT_LEE, OUT_RHO, OUT_SIZE, OUT_TT, PARAMS, TT_STRIDE, buildKernels } from "./shaders.js";
 
 const radians = (deg) => deg * Math.PI / 180;
 const clipNum = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
@@ -33,7 +33,9 @@ export class Solver {
     const n = Math.trunc(cellsPerChord);
     this.device = device;
     this.n = n;
-    this.reSim = reSim || RE_PER_CELL2 * n * n;
+    this.reModel = reSim || RE_PER_CELL2 * n * n;    // simulated Re of the "model size" boundary layer
+    this.reSim = this.reModel;
+    this.fullSize = false;
     this.nx = Math.trunc(DOMAIN_CHORDS[0] * n);
     this.ny = Math.trunc(DOMAIN_CHORDS[1] * n);
     // off-cell offsets: the half cell in y breaks the up/down symmetry; with the quarter cell in x a
@@ -72,6 +74,8 @@ export class Solver {
     this.paramData = new ArrayBuffer(4 * PARAMS.length);
     this.paramView = new DataView(this.paramData);
     this.paramIndex = Object.fromEntries(PARAMS.map(([name, type], k) => [name, [4 * k, type]]));
+    this.setParam("favg", 1);                     // forces: mean of the last two steps (see shaders.js)
+    this._setViscosity();
     this._createBuffers();
   }
 
@@ -87,6 +91,7 @@ export class Solver {
       mask_new: make(4 * cells, S),
       link: make(4 * cells, S),                   // links crossing a membrane: bit k main/plate, 8+k jib (k=1..8)
       cs: make(4 * cells, S),                     // Smagorinsky constant per cell
+      wn: make(8 * cells, S),                     // wall normal of the cells next to a wall (full-size boundary layer)
       rho: make(4 * cells, S),
       vel: make(8 * cells, S),
       img: make(16 * cells, S),
@@ -224,10 +229,29 @@ export class Solver {
                 st.jib_gap * c, st.jib_overlap * c, radians(st.jib_angle)];
     ["shape", "a", "m", "p", "mast_r", "jgap", "jover", "jang"].forEach((name, k) => this.setParam(name, this.geo[k]));
     this._pass(enc, (pass) => {
-      for (const name of ["build_mask", "apply_mask", "build_links", "reset_bbox", "find_bbox", "wall_damping"]) {
+      for (const name of ["build_mask", "apply_mask", "build_links", "reset_bbox", "find_bbox", "wall_damping",
+                          "build_wall"]) {
         this._run(pass, name);
       }
     });
+  }
+
+  _setViscosity() {
+    this.tau0 = 3.0 * U_LAT * this.n / this.reSim + 0.5;
+    this.setParam("tau0", this.tau0);
+    this.setParam("nu", U_LAT * this.n / this.reSim);
+    this.setParam("fs", this.fullSize ? 1 : 0);
+  }
+
+  /**
+   * Boundary layer: model size (the Re of the grid, laminar wall) or full size (approx.): the viscosity of the
+   * real Re plus the law of the wall and near-wall mixing (see config.js). The near-wall mixing is part of the
+   * geometry set-up, so call setGeometry after switching between the two.
+   */
+  setBoundaryLayer(fullSize, reReal) {
+    this.fullSize = fullSize;
+    this.reSim = fullSize ? reReal : this.reModel;
+    this._setViscosity();
   }
 
   // ---------------------------------------------------------------- time stepping
@@ -288,6 +312,12 @@ export class Solver {
 
   leeProfile(out) {
     return Array.from(out.subarray(OUT_LEE, OUT_LEE + LEE_SAMPLES));
+  }
+
+  /** Density 1.5 cells off the main on its lee and windward side, at the stations of the lee profile. */
+  surfaceDensity(out) {
+    return [Array.from(out.subarray(OUT_RHO, OUT_RHO + LEE_SAMPLES)),
+            Array.from(out.subarray(OUT_RHO + LEE_SAMPLES, OUT_RHO + 2 * LEE_SAMPLES))];
   }
 
   /** Telltale ribbons as point lists in cells (empty for telltales that are not shown). */

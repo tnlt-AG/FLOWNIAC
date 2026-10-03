@@ -6,9 +6,9 @@
 // like ti.static(range(9)) in Taichi.
 
 import {
-  CP_RANGE, CYLINDER, CYLINDER_DIAMETER, DRAW_THICKNESS, E, HULL_POINTS, JIB_CHORD, JIB_MAIN, LEE_SAMPLES, MAST_SAIL,
-  NACA0012, NACA2412, OPP, PLATE, SAIL, SIGMA_SPONGE, SMAGORINSKY, START_KICK, TAU_SPONGE, TELLTALES,
-  TELLTALE_LENGTH, TELLTALE_SEGMENTS, U_LAT, VORTICITY_RANGE, W, WALL_DAMPING,
+  B_LOG, CP_RANGE, CYLINDER, CYLINDER_DIAMETER, DRAW_THICKNESS, E, FS_MIXING, FS_MIXING_MAX, FS_SLEEVE, HULL_POINTS,
+  JIB_CHORD, JIB_MAIN, KAPPA, LEE_SAMPLES, MAST_SAIL, NACA0012, NACA2412, OPP, PLATE, SAIL, SIGMA_SPONGE, SMAGORINSKY,
+  START_KICK, TAU_SPONGE, TELLTALES, TELLTALE_LENGTH, TELLTALE_SEGMENTS, U_LAT, VORTICITY_RANGE, W, WALL_DAMPING,
 } from "./config.js";
 
 /** Uniform parameter block P, shared by all kernels: [name, type], 4 bytes each. */
@@ -17,15 +17,17 @@ export const PARAMS = [
   ["mast_r", "f32"], ["jgap", "f32"], ["jover", "f32"], ["jang", "f32"],
   ["gam", "f32"], ["src", "f32"], ["view", "i32"], ["hull", "i32"],      // far field, picture
   ["hull_r", "f32"], ["fw", "f32"], ["fh", "f32"], ["dt", "f32"],
-  ["nsub", "i32"], ["pad0", "u32"], ["hb0", "f32"], ["hb1", "f32"],      // tracers, hull pixel box
+  ["nsub", "i32"], ["favg", "u32"], ["hb0", "f32"], ["hb1", "f32"],      // tracers, force mode, hull box
   ["hb2", "f32"], ["hb3", "f32"], ["smoke_r", "f32"], ["smoke_g", "f32"],
   ["smoke_b", "f32"], ["dot", "f32"], ["emit0", "u32"], ["emit_n", "i32"],   // smoke dot size, smoke release
+  ["tau0", "f32"], ["nu", "f32"], ["fs", "u32"], ["pad1", "u32"],        // viscosity, full-size boundary layer
 ];
 
 /** Storage buffers: WGSL element type. "bbox_atomic" is the bbox buffer seen as atomics. */
 export const BUFFER_TYPES = {
   fa: "array<f32>", fb: "array<f32>",           // populations, k * N + cell (fa = f[cur], fb = f[1 - cur])
   mask: "array<i32>", mask_new: "array<i32>", link: "array<u32>", cs: "array<f32>",
+  wn: "array<vec2f>",                           // wall normal (into the air) of cells next to a wall, else 0
   rho: "array<f32>", vel: "array<vec2f>", img: "array<vec4f>", lut: "array<vec4f>",
   bbox: "array<i32, 4>", bbox_atomic: "array<atomic<i32>, 4>",
   out: "array<f32>",                            // read back each frame: forces, lee profile, telltales
@@ -37,7 +39,8 @@ export const OUT_FORCE = 0;                         // force[4] (x, y), element 
 export const OUT_LEE = 8;                           // LEE_SAMPLES values
 export const OUT_TT = OUT_LEE + LEE_SAMPLES;        // per telltale: point count, then (x, y) points
 export const TT_STRIDE = 1 + 2 * (TELLTALE_SEGMENTS + 1);
-export const OUT_SIZE = OUT_TT + TELLTALES.length * TT_STRIDE;
+export const OUT_RHO = OUT_TT + TELLTALES.length * TT_STRIDE;   // density beside the main: LEE_SAMPLES lee, then windward
+export const OUT_SIZE = OUT_RHO + 2 * LEE_SAMPLES;
 
 /** Float literal for WGSL with the full double precision (converted to f32 like a Taichi constant). */
 const fl = (v) => {
@@ -56,7 +59,6 @@ const N: i32 = ${sim.nx * sim.ny};
 const C: f32 = ${fl(sim.n)};                      // cells per chord
 const PX: f32 = ${fl(sim.px)};
 const PY: f32 = ${fl(sim.py)};
-const TAU0: f32 = ${fl(sim.tau0)};
 const SPONGE: f32 = ${fl(sim.sponge)};
 const SIDE_SPONGE: f32 = ${fl(sim.sideSponge)};
 const VX0: f32 = ${fl(sim.vx0)};
@@ -68,6 +70,9 @@ const N_LINES: i32 = ${sim.nLines};
 const PER_LINE: i32 = ${sim.perLine};
 const RAKE_X: f32 = ${fl(sim.rakeX)};
 const SMOKE_PER_CELL: f32 = ${fl(sim.smokePerCell)};
+const FS_MIX_MAX: f32 = ${fl(FS_MIXING_MAX * sim.n)};     // full-size mixing length cap, cells
+const FS_SLEEVE_CELLS: f32 = ${fl(FS_SLEEVE * sim.n)};
+const DAMP_R: i32 = ${Math.max(Math.trunc(4 * WALL_DAMPING), Math.ceil(FS_SLEEVE * sim.n) + 1)};
 
 const U_LAT: f32 = ${fl(U_LAT)};
 const SMAGORINSKY: f32 = ${fl(SMAGORINSKY)};
@@ -75,6 +80,11 @@ const WALL_DAMPING: f32 = ${fl(WALL_DAMPING)};
 const TAU_SPONGE: f32 = ${fl(TAU_SPONGE)};
 const SIGMA_SPONGE: f32 = ${fl(SIGMA_SPONGE)};
 const START_KICK: f32 = ${fl(START_KICK)};
+const KAPPA: f32 = ${fl(KAPPA)};
+const B_LOG: f32 = ${fl(B_LOG)};
+const EKB: f32 = ${fl(Math.exp(-KAPPA * B_LOG))};
+const FS_MIXING: f32 = ${fl(FS_MIXING)};
+const WALL_D: f32 = 0.5;                          // wall distance of a wall cell (halfway bounce-back)
 const JIB_CHORD: f32 = ${fl(JIB_CHORD)};
 const CYLINDER_DIAMETER: f32 = ${fl(CYLINDER_DIAMETER)};
 const DRAW_THICKNESS: f32 = ${fl(DRAW_THICKNESS)};
@@ -87,6 +97,7 @@ const N_TELLTALES: i32 = ${TELLTALES.length};
 const TT_STRIDE: i32 = ${TT_STRIDE};
 const OUT_LEE: i32 = ${OUT_LEE};
 const OUT_TT: i32 = ${OUT_TT};
+const OUT_RHO: i32 = ${OUT_RHO};
 const HULL_SEGMENTS: i32 = ${2 * HULL_POINTS};
 const PI: f32 = ${fl(Math.PI)};
 
@@ -313,6 +324,37 @@ fn far_velocity(i: i32, j: i32, gam: f32, src: f32) -> vec2f {
   return vec2f(U_LAT + k * (-gam * dy + src * dx), k * (gam * dx + src * dy));
 }
 
+// Spalding's law of the wall, solved for u+ = s / u_tau from R = s d / nu (s: speed along the wall at
+// distance d) by Newton iteration
+fn wall_uplus(R: f32) -> f32 {
+  var up = select(sqrt(R), log(R) / KAPPA + 1.0, R > 120.0);
+  for (var it = 0; it < 8; it++) {
+    let ku = KAPPA * up;
+    let ek = exp(ku);
+    let g = up + EKB * (ek - 1.0 - ku - 0.5 * ku * ku - ku * ku * ku / 6.0);
+    let gp = 1.0 + EKB * KAPPA * (ek - 1.0 - ku - 0.5 * ku * ku);
+    up = max(up - (g - R / up) / (gp + R / (up * up)), 1e-3);
+  }
+  return up;
+}
+
+// Full-size boundary layer at a wall cell with velocity u and wall normal n: the law of the wall gives the
+// friction velocity u_tau; the wall then moves with the slip velocity s - u_tau / kappa and the cell gets the
+// eddy viscosity kappa u_tau d, so the bounce-back passes the turbulent wall stress u_tau^2 to the air.
+// Returns (slip velocity, eddy viscosity).
+fn wall_slip(u: vec2f, n: vec2f) -> vec3f {
+  var r = vec3f(0.0);
+  if (dot(n, n) > 0.5) {
+    let ut = u - dot(u, n) * n;
+    let s = length(ut);
+    if (s > 1e-9) {
+      let utau = s / wall_uplus(s * WALL_D / P.nu);
+      r = vec3f(ut * (max(s - utau / KAPPA, 0.0) / s), KAPPA * utau * WALL_D);
+    }
+  }
+  return r;
+}
+
 fn lut_index(which: i32, t: f32) -> i32 {
   return which * 256 + i32(clamp(t, 0.0, 1.0) * 255.0);
 }
@@ -346,6 +388,18 @@ fn sample_vel(pos: vec2f) -> vec2f {
   let fy = y - f32(j);
   return (1.0 - fx) * (1.0 - fy) * vel[ix(i, j)] + fx * (1.0 - fy) * vel[ix(i + 1, j)]
        + (1.0 - fx) * fy * vel[ix(i, j + 1)] + fx * fy * vel[ix(i + 1, j + 1)];
+}`;
+
+const SAMPLE_RHO = /* wgsl */ `
+fn sample_rho(pos: vec2f) -> f32 {
+  let x = clamp(pos.x, 0.0, f32(NX) - 1.001);
+  let y = clamp(pos.y, 0.0, f32(NY) - 1.001);
+  let i = i32(x);
+  let j = i32(y);
+  let fx = x - f32(i);
+  let fy = y - f32(j);
+  return (1.0 - fx) * (1.0 - fy) * rho[ix(i, j)] + fx * (1.0 - fy) * rho[ix(i + 1, j)]
+       + (1.0 - fx) * fy * rho[ix(i, j + 1)] + fx * fy * rho[ix(i + 1, j + 1)];
 }`;
 
 const GRID = "@compute @workgroup_size(16, 16)\nfn main(@builtin(global_invocation_id) gid: vec3u)";
@@ -454,12 +508,13 @@ ${GRID} {
 }`,
     },
 
-    // Smagorinsky constant fades to zero at walls (van Driest style) so the wall friction stays low
+    // Smagorinsky constant fades to zero at walls (van Driest style) so the wall friction stays low. Full-size
+    // boundary layer: no damping, and near the walls the mixing length FS_MIXING * kappa * wall distance
     wall_damping: {
       uses: ["mask", "link", "cs", "bbox"], size: "grid", code: /* wgsl */ `
 ${GRID} {
   ${GRID_IJ}
-  let r = ${Math.trunc(4 * WALL_DAMPING)};
+  let r = select(${Math.trunc(4 * WALL_DAMPING)}, DAMP_R, P.fs != 0u);
   var d2 = f32(r * r);
   if (i >= bbox[0] - r && i <= bbox[2] + r && j >= bbox[1] - r && j <= bbox[3] + r) {
     for (var di = -r; di <= r; di++) {
@@ -473,12 +528,70 @@ ${GRID} {
   }
   let g = 1.0 - exp(-sqrt(d2) / WALL_DAMPING);
   cs[c] = SMAGORINSKY * g * g;
+  if (P.fs != 0u) {
+    let dd = sqrt(d2);
+    cs[c] = select(SMAGORINSKY, max(SMAGORINSKY, FS_MIXING * KAPPA * min(dd, FS_MIX_MAX)), dd <= FS_SLEEVE_CELLS);
+  }
+}`,
+    },
+
+    // unit normal (pointing into the air) of every air cell next to a wall, for the law of the wall: from the
+    // camber line for the sail, plate and jib membranes, from the blocked neighbours for solid bodies
+    build_wall: {
+      uses: ["mask", "link", "wn"], size: "grid", code: /* wgsl */ `
+${GRID} {
+  ${GRID_IJ}
+  var w = vec2f(0.0);
+  if (mask[c] == 0 && i > 0 && j > 0 && i < NX - 1 && j < NY - 1) {
+    let lk = link[c];
+    let b = to_body(f32(i), f32(j), P.a);
+    let ca = cos(P.a);
+    let sa = sin(P.a);
+    if ((lk & 0x1FEu) != 0u) {                     // main sail / plate / camber line
+      var mm = P.m;
+      var pp = P.p;
+      if (P.shape == PLATE || P.shape == NACA0012) {
+        mm = 0.0;
+      } else if (P.shape == NACA2412) {
+        mm = 0.02;
+        pp = 0.4;
+      }
+      let ml = mean_line(clamp(b.x / C, 0.0, 1.0), mm, pp);
+      var nb = normalize(vec2f(-ml.y, 1.0));
+      if (b.y - ml.x * C < 0.0) {
+        nb = -nb;
+      }
+      w = vec2f(nb.x * ca + nb.y * sa, -nb.x * sa + nb.y * ca);
+    } else if (((lk >> 8u) & 0x1FEu) != 0u) {      // jib
+      let jf = jib_frame(b.x, b.y, P.m, P.p, P.jgap, P.jover, P.jang);
+      let ml = mean_line(clamp(jf.x / (JIB_CHORD * C), 0.0, 1.0), P.m, P.p);
+      var nj = normalize(vec2f(-ml.y, 1.0));
+      if (jf.y - ml.x * JIB_CHORD * C < 0.0) {
+        nj = -nj;
+      }
+      let cj = cos(P.jang);
+      let sj = sin(P.jang);
+      let nb = vec2f(nj.x * cj + nj.y * sj, -nj.x * sj + nj.y * cj);
+      w = vec2f(nb.x * ca + nb.y * sa, -nb.x * sa + nb.y * ca);
+    } else {
+      var ns = vec2f(0.0);
+${each(K9.slice(1), (k) => `      if (mask[ix(i + ${E[k][0]}, j + ${E[k][1]})] != 0) {
+        ns -= ${fl(W[k])} * vec2f(${fl(E[k][0])}, ${fl(E[k][1])});
+      }`)}
+      if (length(ns) > 1e-9) {
+        w = normalize(ns);
+      }
+    }
+  }
+  wn[c] = w;
 }`,
     },
 
     // fa holds post-collision populations: pull-stream them (bounce-back at walls), collide, store in fb
     step: {
-      uses: ["fa", "fb", "mask", "link", "cs"], size: "grid", code: /* wgsl */ `
+      uses: ["fa", "fb", "mask", "link", "cs", "wn"], size: "grid", code: /* wgsl */ `
+${LOAD_FA}
+
 ${COLLIDE}
 
 ${GRID} {
@@ -495,12 +608,24 @@ ${GRID} {
   lk = (lk | (lk >> 8u)) & 511u;                   // links blocked by any membrane (bits 1..8)
   var fin: array<f32, 9>;
   fin[0] = fa[c];
+  var walls = 0u;
 ${each(K9.slice(1), (k) => `  {
     let s = c - (${E[k][0]}) - (${E[k][1]}) * NX;
     let wall = mask[s] != 0 || ((lk >> ${OPP[k]}u) & 1u) != 0u;   // solid cell, or the link crosses a sail
     fin[${k}] = select(fa[${k} * N + s], fa[${OPP[k]} * N + c], wall);   // halfway bounce-back
+    walls |= select(0u, ${1 << k}u, wall);
   }`)}
-  let fo = collide(fin, i, j, c);
+  // full-size boundary layer: the wall moves with the slip velocity of the law of the wall
+  var nut = 0.0;
+  if (P.fs != 0u && walls != 0u) {
+    let mo = moments(load_fa(c));
+    let sl = wall_slip(mo.yz, wn[c]);
+    nut = sl.z;
+${each(K9.slice(1), (k) => `    if ((walls & ${1 << k}u) != 0u) {
+      fin[${k}] += ${fl(6 * W[k])} * mo.x * dot(vec2f(${fl(E[k][0])}, ${fl(E[k][1])}), sl.xy);
+    }`)}
+  }
+  let fo = collide(fin, i, j, c, nut);
 ${each(K9, (k) => `  fb[${k} * N + c] = fo[${k}];`)}
 }`,
     },
@@ -553,9 +678,13 @@ ${LINE} {
 }`,
     },
 
-    // momentum exchange on the wall links around the body, summed by one workgroup
+    // momentum exchange on the wall links around the body, summed by one workgroup. With P.favg != 0 it
+    // is the mean of the last two steps (fa and the previous populations still in fb): close to tau = 0.5
+    // the populations alternate from one step to the next, and so does the force of a single step
     forces: {
-      uses: ["fa", "mask", "link", "bbox", "out"], size: "workgroup", code: /* wgsl */ `
+      uses: ["fa", "fb", "mask", "link", "bbox", "out", "wn"], size: "workgroup", code: /* wgsl */ `
+${LOAD_FA}
+
 var<workgroup> red: array<vec2f, 768>;
 
 @compute @workgroup_size(256)
@@ -575,6 +704,16 @@ fn main(@builtin(local_invocation_index) li: u32) {
       let c = ix(x0 + t % w, y0 + t / w);
       if (mask[c] == 0) {
         let lk = link[c];
+        var us = vec2f(0.0);                        // slip velocity of the wall (full-size boundary layer)
+        var rw = 1.0;
+        if (P.fs != 0u) {
+          let n = wn[c];
+          if (dot(n, n) > 0.5) {
+            let mo = moments(load_fa(c));
+            us = wall_slip(mo.yz, n).xy;
+            rw = mo.x;
+          }
+        }
 ${each(K9.slice(1), (k) => `        {
           var s = mask[c + (${E[k][0]}) + (${E[k][1]}) * NX];
           if (s == 0) {
@@ -588,7 +727,9 @@ ${each(K9.slice(1), (k) => `        {
             // population heading into the wall bounces back: momentum 2 f e_k. The rest-state part
             // (w_k) is removed, so parts touching each other (mast/main) do not pick up the static
             // pressure on their hidden contact faces; the total force is unchanged.
-            let d = 2.0 * (fa[${k} * N + c] - ${fl(W[k])}) * vec2f(${fl(E[k][0])}, ${fl(E[k][1])});
+            let f2k = select(2.0 * fa[${k} * N + c], fa[${k} * N + c] + fb[${k} * N + c], P.favg != 0u);
+            let ek = vec2f(${fl(E[k][0])}, ${fl(E[k][1])});
+            let d = (f2k - ${fl(2 * W[k])} - ${fl(6 * W[k])} * rw * dot(ek, us)) * ek;
             if (s == 1) {
               f1 += d;
             } else if (s == 2) {
@@ -685,10 +826,13 @@ ${GRID} {
 }`,
     },
 
-    // flow speed along the lee side of the main, 2 cells off the cloth (negative = reversed = separated)
+    // flow speed along the lee side of the main, 2 cells off the cloth (negative = reversed = separated), and
+    // the density (pressure) 1.5 cells off the cloth on both sides, for the full-size drag estimate
     leeward_profile: {
-      uses: ["vel", "out"], size: LEE_SAMPLES, code: /* wgsl */ `
+      uses: ["vel", "rho", "out"], size: LEE_SAMPLES, code: /* wgsl */ `
 ${SAMPLE_VEL}
+
+${SAMPLE_RHO}
 
 ${LINE} {
   let k = i32(gid.x);
@@ -697,8 +841,11 @@ ${LINE} {
   }
   let f = sail_frame((f32(k) + 0.5) / f32(LEE_SAMPLES), 1, P.a, P.m, P.p, 0.0, 0.0, 0.0);
   let t = f.zw;
-  let u = sample_vel(f.xy + 2.0 * vec2f(-t.y, t.x));
+  let nrm = vec2f(-t.y, t.x);
+  let u = sample_vel(f.xy + 2.0 * nrm);
   out[OUT_LEE + k] = dot(u, t) / U_LAT;
+  out[OUT_RHO + k] = sample_rho(f.xy + 1.5 * nrm);
+  out[OUT_RHO + LEE_SAMPLES + k] = sample_rho(f.xy - 1.5 * nrm);
 }`,
     },
 
@@ -852,7 +999,7 @@ ${LINE} {
 
 // KBC collision with the Smagorinsky sub-grid model and the absorbing layers (Flowniac.Solver._collide)
 const COLLIDE = /* wgsl */ `
-fn collide(fin: array<f32, 9>, i: i32, j: i32, c: i32) -> array<f32, 9> {
+fn collide(fin: array<f32, 9>, i: i32, j: i32, c: i32, nut: f32) -> array<f32, 9> {
   let mo = moments(fin);
   let rho = mo.x;
   let u = mo.yz;
@@ -862,10 +1009,13 @@ ${each(K9, (k) => `  df[${k}] = fin[${k}] - fe[${k}];`)}
   let pxx = df[1] + df[3] + df[5] + df[6] + df[7] + df[8];
   let pyy = df[2] + df[4] + df[5] + df[6] + df[7] + df[8];
   let pxy = df[5] - df[6] + df[7] - df[8];
-  // effective relaxation time: molecular + Smagorinsky sub-grid viscosity + outlet sponge
-  var tau = TAU0;
+  // effective relaxation time: molecular + Smagorinsky sub-grid viscosity (or, in a wall cell of the full-size
+  // boundary layer, the eddy viscosity nut of the law of the wall) + outlet sponge
+  var tau = P.tau0;
   let csv = cs[c];
-  if (csv > 0.0) {
+  if (nut > 0.0) {
+    tau = P.tau0 + 3.0 * nut;
+  } else if (csv > 0.0) {
     let qn = sqrt(pxx * pxx + pyy * pyy + 2.0 * pxy * pxy);
     tau = 0.5 * (tau + sqrt(tau * tau + 18.0 * 1.41421356 * csv * csv * qn / rho));
   }

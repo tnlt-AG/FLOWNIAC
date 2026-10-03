@@ -2,8 +2,8 @@
 // steps and keys) plus quality and slow motion. The column is plain HTML (it scales with the browser zoom).
 
 import {
-  CP_RANGE, FORCE_AXES, HELP_LINES, JIB_MAIN, MAST_SAIL, QUALITY_CELLS, RE_PER_CELL2, RHO_AIR, SAIL, SHAPES,
-  SLOW_MOTION, VIEWS, VORTICITY_RANGE,
+  BOUNDARY_LAYERS, CP_RANGE, FORCE_AXES, HELP_LINES, JIB_MAIN, MAST_SAIL, QUALITY_CELLS, RE_PER_CELL2, RHO_AIR, SAIL,
+  SHAPES, SLOW_MOTION, VERSION, VIEWS, VORTICITY_RANGE,
 } from "./config.js";
 import { LUTS } from "./luts.js";
 import { fmtNum } from "./results.js";
@@ -161,13 +161,15 @@ export class Panel {
     const st = this.st;
     const add = (el) => this.root.append(el);
     add(this._el("header", { className: "title" }, this._el("h1", { textContent: "FLOWNIAC" }),
-                 this._el("span", { textContent: "sail aerodynamics" })));
+                 this._el("span", { textContent: "sail aerodynamics" }),
+                 this._el("span", { className: "version", textContent: VERSION })));
     add(this._select("Shape", "shape", SHAPES.map(([, name]) => name)));
     for (const sl of Panel.SLIDERS) add(this._slider(sl));
     add(this._select("View", "view", VIEWS, "gap"));
     add(this._scale());
     add(this._select("Forces", "axes", FORCE_AXES));
     add(this._quality());
+    add(this._select("Boundary layer", "boundary", BOUNDARY_LAYERS));
     add(this._slider(["Slow motion", "slowmo", 0, SLOW_MOTION.length - 1, 1, fmtSlow, null], "row wide-out"));
     add(this._toggles([["Smoke", "tracers"], ["Arrows", "arrows"], ["Telltales", "telltales"]]));
     add(this._toggles([["Boat", "boat"], ["Polar plot", "polar"]]));
@@ -292,7 +294,8 @@ export class Panel {
     const st = this.st;
     const now = performance.now() / 1000;
     const sig = JSON.stringify([st.shape, st.view, st.axes, st.tracers, st.arrows, st.telltales, st.boat, st.polar,
-                                st.paused, st.help, st.quality, st.slowmo, Panel.SLIDERS.map((sl) => st[sl[1]])]);
+                                st.paused, st.help, st.quality, st.slowmo, st.boundary,
+                                Panel.SLIDERS.map((sl) => st[sl[1]])]);
     if (sig !== this.sig) {
       for (const [, update] of this.controls) update(st);
     } else if (lines.join("\n") === (this.lines || []).join("\n") || now - this.tText < 0.4) {

@@ -1,6 +1,8 @@
 // Settings and user state. Started as a copy of the "Settings" section and class State of Flowniac.py
 // (same names in UPPER_CASE, same values); only the web version is developed further.
 
+export const VERSION = "v1.1";          // shown next to the title; raise it with each release
+
 export const RHO_AIR = 1.225;           // kg/m^3, sea level, 15 degC
 export const NU_AIR = 1.46e-5;          // m^2/s, kinematic viscosity of air at 15 degC
 export const SPAN_EFFICIENCY = 0.9;     // Oswald factor e for the whole-sail induced-drag estimate
@@ -16,6 +18,20 @@ export const SIDE_SPONGE_CHORDS = 0.3;      // absorbing layer along the top and
 export const TAU_SPONGE = 0.8;              // extra viscosity reached at the outlet (damps the wake)
 export const SIGMA_SPONGE = 0.05;           // per-step pull towards undisturbed flow at the edge (kills sound echoes)
 export const START_KICK = 0.5;              // up-draft behind the body at the start (fraction of U): starts the vortex street
+
+// Boundary layer "full size (approx.)": the viscosity of the real Reynolds number (wind x sail width), the
+// turbulent law of the wall at the sails (slip velocity and wall-cell eddy viscosity from Spalding's law) and
+// strong mixing near the walls. The grid cannot resolve the thin turbulent boundary layer of a real sail; this
+// mixing stands in for it so the flow stays attached about as long as on a real sail, but it makes the layer
+// far too thick, so the simulated drag is too high: the drag shown is estimated instead (results.js).
+// Tuned for the single sail on the High and Ultra grids.
+export const BOUNDARY_LAYERS = ["Model size", "Full size (approx.)"];
+export const KAPPA = 0.41;              // von Karman constant
+export const B_LOG = 5.2;               // log-law intercept
+export const FS_MIXING = 1.5;           // near-wall mixing length = this * KAPPA * wall distance ...
+export const FS_MIXING_MAX = 0.03;      // ... up to this fraction of the chord
+export const FS_SLEEVE = 0.08;          // the extra mixing acts within this fraction of the chord of a wall
+export const FS_FORM_FACTOR = 2.0;      // drag estimate: form drag of attached flow = this x skin friction
 
 export const QUALITY_CELLS = { low: 64, medium: 100, high: 160, ultra: 256 };   // cells per chord
 export const AUTO_SECONDS_PER_CHORD = 3.0;  // "auto" picks the finest grid that moves the flow one chord in this time
@@ -103,6 +119,7 @@ export class State {
     this.height = 9.0;        // m, sail height (luff)
     this.heading = 30.0;      // deg, boat centreline to the wind (to the right); drawing and drive/side only
     this.quality = "medium";  // grid preset (key of QUALITY_CELLS); main() sets the one it starts with
+    this.boundary = 0;        // index into BOUNDARY_LAYERS: 0 model size, 1 full size (approx.)
     this.slowmo = 0;          // index into SLOW_MOTION
     this.view = 0;
     this.axes = 0;            // index into FORCE_AXES
@@ -157,6 +174,7 @@ export class State {
     this.height = clip(this.height, 1.0, 40.0);
     this.heading = clip(this.heading, 0.0, 180.0);
     if (!(this.quality in QUALITY_CELLS)) this.quality = "medium";
+    this.boundary = clip(Math.round(this.boundary), 0, BOUNDARY_LAYERS.length - 1);
     this.slowmo = clip(Math.round(this.slowmo), 0, SLOW_MOTION.length - 1);
     this.view = ((Math.trunc(this.view) % VIEWS.length) + VIEWS.length) % VIEWS.length;
     this.axes = ((Math.trunc(this.axes) % FORCE_AXES.length) + FORCE_AXES.length) % FORCE_AXES.length;

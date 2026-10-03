@@ -17,6 +17,7 @@ async function runCase(device, c, chunk) {
   st.aoa = c.aoa;
   st.clamp();
   const sim = await Solver.create(device, QUALITY_CELLS[c.quality], { nTracerLines: 1, reSim: c.re_sim ?? null });
+  sim.setParam("favg", 0);                        // the reference forces are those of a single step
   let enc = device.createCommandEncoder();
   sim.setGeometry(enc, st);
   sim.submit(enc);

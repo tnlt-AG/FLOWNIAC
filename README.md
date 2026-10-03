@@ -17,6 +17,8 @@ Safari 26+, Firefox 141+ on Windows)
 - A dinghy outline with adjustable heading: drive and side force, boom angle
 - The wind blows from the top, as sailors draw it
 - Grid quality from Low to Ultra (simulated Reynolds number 8'000 to 131'000) and slow motion down to 50x
+- Web version: boundary layer "model size" or "full size (approx.)", to compare early separation at the
+  simulated Reynolds number with the attached flow of a real sail
 
 ## Desktop version
 
@@ -44,6 +46,13 @@ The simulation is 2D and runs at the highest Reynolds number each grid resolves 
 below a real sail (0.3 to 5 million). Lift is close to full size; section drag comes out higher, and fully
 separated flow (stall, downwind) is over-predicted, a 2D limitation. The header of `Flowniac.py`
 describes the model, its limits and the validation against reference cases.
+
+The web version can instead approximate the full-size boundary layer: the viscosity of the real Reynolds
+number, the turbulent law of the wall at the sail and strong mixing near it, which the grid needs in place
+of the thin turbulent layer it cannot resolve. The flow then stays attached about as long as on a real sail
+(single sail: attached to about 12 degrees, separation from the leech at 15, stall near 20), but the modelled
+layer is far too thick, so the drag shown in this mode is estimated (turbulent skin friction plus form drag,
+plus the simulated drag of the separated part). Tuned for the single sail on the High and Ultra grids.
 
 ## License
 

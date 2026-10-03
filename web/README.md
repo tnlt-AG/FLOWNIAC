@@ -3,8 +3,10 @@
 The browser version of FLOWNIAC and the one that is developed further. It started as a port of
 `Flowniac.py` (the desktop version, no longer developed): the same lattice-Boltzmann solver, written as
 WebGPU compute shaders (WGSL), with the same controls, keys, results and polar plot. Since then it got a
-Quality selector (switches the grid live), a Slow motion slider (keys `s`/`S`) and continuous smoke
-streaks. Plain HTML, CSS and JavaScript modules: no build step, no dependencies.
+Quality selector (switches the grid live), a Slow motion slider (keys `s`/`S`), continuous smoke
+streaks and a Boundary layer selector: "model size" (the simulation at the grid's Reynolds number, as in
+`Flowniac.py`) or "full size (approx.)" (law of the wall and near-wall mixing, drag estimated; see the
+header of `js/config.js`). Plain HTML, CSS and JavaScript modules: no build step, no dependencies.
 
 ## Run it
 
@@ -19,10 +21,11 @@ Then open <http://localhost:8000>. Any static web host (e.g. GitHub Pages) works
 Needs a browser with WebGPU: current Chrome or Edge, Safari 26 or newer, Firefox 141 or newer on Windows.
 
 The URL sets the start values, like the command line of `Flowniac.py`, for example
-`index.html?quality=high&shape=jib_main&aoa=15&wind-from=left&forces=drive&polar`:
+`index.html?quality=high&shape=jib_main&aoa=15&wind-from=left&forces=drive&boundary=full&polar`:
 `quality` (auto, low, medium, high, ultra; auto measures the GPU and picks the finest grid that still
 moves the flow one chord in 3 s), `shape`, `aoa`, `camber`, `draft` (%), `wind`, `width`,
-`height`, `heading`, `forces` (lift, drive), `view` (speed, vorticity, pressure, smoke), `no-boat`,
+`height`, `heading`, `forces` (lift, drive), `boundary` (model, full), `view` (speed, vorticity,
+pressure, smoke), `no-boat`,
 `polar`, `wind-from` (top, left). The control column scales with the browser zoom (Ctrl +/-).
 
 ## Files
@@ -40,8 +43,9 @@ moves the flow one chord in 3 s), `shape`, `aoa`, `camber`, `draft` (%), `wind`,
 
 ## Solver parity with Flowniac.py
 
-The flow solver (constants, kernels, order of operations) still matches `Flowniac.py`; the smoke, the
-quality selection and the playback speed no longer do. The parity test checks the solver:
+The flow solver (constants, kernels, order of operations) still matches `Flowniac.py` with the "model
+size" boundary layer; the smoke, the quality selection, the playback speed and the "full size (approx.)"
+boundary layer are web-only. The parity test checks the solver (model size, forces of a single step):
 
 ```bash
 python web/tools/parity.py

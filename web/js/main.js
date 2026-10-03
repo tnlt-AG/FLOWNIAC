@@ -1,14 +1,14 @@
 // FLOWNIAC web version: main loop, picture, quality selection and playback speed. Started from main(),
 // Front/GGUIFront and auto_quality() of Flowniac.py. URL parameters set the start values, e.g.
-//   index.html?quality=high&shape=jib_main&aoa=15&wind-from=left&forces=drive&polar
+//   index.html?quality=high&shape=jib_main&aoa=15&wind-from=left&forces=drive&boundary=full&polar
 
 import {
-  AUTO_SECONDS_PER_CHORD, DOMAIN_CHORDS, QUALITY_CELLS, SAIL_SHAPES, SHAPES, SLOW_MOTION, SOLVER_SHARE, State,
+  AUTO_SECONDS_PER_CHORD, DOMAIN_CHORDS, NU_AIR, QUALITY_CELLS, SAIL_SHAPES, SHAPES, SLOW_MOTION, SOLVER_SHARE, State,
   TARGET_FPS, TELLTALES, UI_SCALE, U_LAT, WIND_FROM,
 } from "./config.js";
 import { initGPU } from "./gpu.js";
 import { PolarPlot } from "./polar.js";
-import { Averager, arrowGeometry, playback, resultLines, results, tracerColor } from "./results.js";
+import { Averager, arrowGeometry, fullSizeDrag, playback, resultLines, results, tracerColor } from "./results.js";
 import { Solver } from "./solver.js";
 import { Keys, Panel } from "./ui.js";
 
@@ -29,6 +29,7 @@ function parseArgs() {
     height: num("height", 9.0),
     heading: num("heading", 30.0),
     forces: choice("forces", ["lift", "drive"], "lift"),
+    boundary: choice("boundary", ["model", "full"], "model"),
     noBoat: q.has("no-boat"),
     view: choice("view", VIEW_KEYS, "speed"),
     polar: q.has("polar"),
@@ -200,6 +201,7 @@ async function main() {
   st.view = VIEW_KEYS.indexOf(args.view);
   st.heading = args.heading;
   st.axes = ["lift", "drive"].indexOf(args.forces);
+  st.boundary = ["model", "full"].indexOf(args.boundary);
   st.boat = !args.noBoat;
   st.polar = args.polar;
   st.clamp();
@@ -219,6 +221,8 @@ async function main() {
   logGrid(sim);
   let avg = new Averager(sim.stepsPerChord);
   let geometry = null;
+  let boundary = null;                             // boundary layer the solver is set up for
+  let reFull = 0.0;                                // and its Re (full size)
   let stepsPerFrame = 10;                          // what the GPU manages within the frame budget
   let allowance = 0.0;                             // solver steps the slow-motion setting still allows
   let fps = 0.0;
@@ -241,6 +245,7 @@ async function main() {
     front.setSim(sim);
     avg = new Averager(sim.stepsPerChord);
     geometry = null;
+    boundary = null;
     lee = null;
     stepsPerFrame = 10;
     tStep = 0.0;
@@ -256,6 +261,16 @@ async function main() {
     if (st.quality !== quality) await switchQuality();
     const sail = SAIL_SHAPES.includes(st.shape);
     let enc = device.createCommandEncoder();
+    // full-size boundary layer: the viscosity follows the real Re (wind x sail width); the near-wall mixing
+    // is set up with the geometry
+    const re = st.wind * st.width / NU_AIR;
+    if (st.boundary !== boundary || (st.boundary && re !== reFull)) {
+      if (st.boundary !== boundary) geometry = null;
+      boundary = st.boundary;
+      reFull = re;
+      sim.setBoundaryLayer(st.boundary === 1, re);
+      avg.reset();
+    }
     if (st.geometry() !== geometry) {
       geometry = st.geometry();
       sim.setGeometry(enc, st);
@@ -312,10 +327,6 @@ async function main() {
       unstableUntil = performance.now() / 1000 + 4.0;
       coeffs = [[0, 0], [0, 0], [0, 0], [0, 0]];
     }
-    avg.add(coeffs, steps);
-    enc = device.createCommandEncoder();
-    if (st.tracers) sim.advectTracers(enc, steps);
-    sim.render(enc, st.view);
     if (sail) {
       const prof = sim.leeProfile(out);
       const k = steps > 0 ? 1.0 - Math.exp(-steps / (0.5 * sim.stepsPerChord)) : 0.0;
@@ -323,11 +334,22 @@ async function main() {
     } else {
       lee = null;
     }
+    // fifth set: total with the drag estimated for the full-size boundary layer (the far field below keeps
+    // using the simulated drag, which is what the simulated wake carries)
+    let cdEst = coeffs[0][0];
+    if (st.boundary && lee !== null) cdEst = fullSizeDrag(st, coeffs[0][0], ...sim.surfaceDensity(out), lee);
+    coeffs.push([cdEst, coeffs[0][1]]);
+    avg.add(coeffs, steps);
+    enc = device.createCommandEncoder();
+    if (st.tracers) sim.advectTracers(enc, steps);
+    sim.render(enc, st.view);
 
     const c = avg.value;
     sim.setFarField(c[0][1], c[0][0], st.refFraction());
     const r = results(st, c);
-    if (avg.ready) polar.record(`${st.configLabel()}, ${quality}`, st.aoa, r.cl, r.cd);   // own curve per grid (Re)
+    if (avg.ready) {                               // own curve per grid (Re) and boundary layer
+      polar.record(`${st.configLabel()}, ${quality}${st.boundary ? ", full size" : ""}`, st.aoa, r.cl, r.cd);
+    }
     polar.visible = st.polar;
     polar.update(r.ar, [st.aoa, r.cl, r.cd]);
 
