@@ -1,20 +1,27 @@
-// Control column and keyboard. Mirrors classes Keys and Panel of Flowniac.py: same controls, ranges,
-// steps and keys. The column is plain HTML here (it scales with the browser zoom).
+// Control column and keyboard. Started from classes Keys and Panel of Flowniac.py (same controls, ranges,
+// steps and keys) plus quality and slow motion. The column is plain HTML (it scales with the browser zoom).
 
 import {
-  CP_RANGE, FORCE_AXES, HELP_LINES, JIB_MAIN, MAST_SAIL, RHO_AIR, SAIL, SHAPES, VIEWS, VORTICITY_RANGE,
+  CP_RANGE, FORCE_AXES, HELP_LINES, JIB_MAIN, MAST_SAIL, QUALITY_CELLS, RE_PER_CELL2, RHO_AIR, SAIL, SHAPES,
+  SLOW_MOTION, VIEWS, VORTICITY_RANGE,
 } from "./config.js";
 import { LUTS } from "./luts.js";
 import { fmtNum } from "./results.js";
 
 const sign = (v, s) => (v >= 0 ? "+" : "") + s;
 
+/** Slow-motion setting as text: as fast as the GPU allows, real time, or N times slower than the real wind. */
+const fmtSlow = (k) => {
+  const s = SLOW_MOTION[Math.round(k)];
+  return s === 0 ? "fastest" : s === 1 ? "real time" : `${s}x slower`;
+};
+
 /** Keyboard handling. Arrow keys auto-repeat while held (own timing, as in the desktop version). */
 export class Keys {
   static STEP = { aoa: 1.0, camber: 0.01, draft: 0.05, wind: 1.0, width: 0.25, height: 1.0,
-                  mast: 0.01, jib_gap: 0.01, jib_angle: 1.0, jib_overlap: 0.05, heading: 5.0 };
+                  mast: 0.01, jib_gap: 0.01, jib_angle: 1.0, jib_overlap: 0.05, heading: 5.0, slowmo: 1 };
   static LETTER = { d: "draft", w: "wind", c: "width", h: "height", m: "mast", g: "jib_gap",
-                    j: "jib_angle", o: "jib_overlap", b: "heading" };
+                    j: "jib_angle", o: "jib_overlap", b: "heading", s: "slowmo" };
   static HELD = { ArrowUp: ["aoa", 1], ArrowDown: ["aoa", -1], ArrowRight: ["camber", 1], ArrowLeft: ["camber", -1] };
 
   constructor(st) {
@@ -160,6 +167,8 @@ export class Panel {
     add(this._select("View", "view", VIEWS, "gap"));
     add(this._scale());
     add(this._select("Forces", "axes", FORCE_AXES));
+    add(this._quality());
+    add(this._slider(["Slow motion", "slowmo", 0, SLOW_MOTION.length - 1, 1, fmtSlow, null], "row wide-out"));
     add(this._toggles([["Smoke", "tracers"], ["Arrows", "arrows"], ["Telltales", "telltales"]]));
     add(this._toggles([["Boat", "boat"], ["Polar plot", "polar"]]));
     const run = this._button("Pause", () => { st.paused = !st.paused; });
@@ -187,7 +196,20 @@ export class Panel {
     return this._el("div", { className: `row ${cls}` }, this._el("label", { htmlFor: id, textContent: label }), sel);
   }
 
-  _slider([label, attr, lo, hi, step, fmt, shapes]) {
+  /** Grid preset: finer grids simulate a higher Reynolds number (thinner boundary layer) but run slower. */
+  _quality() {
+    const st = this.st;
+    const id = "ctl-quality";
+    const re = (n) => `${Math.round(RE_PER_CELL2 * n * n / 1000)}k`;
+    const sel = this._el("select", { id }, ...Object.entries(QUALITY_CELLS).map(([key, n]) =>
+      this._el("option", { value: key, textContent: `${key[0].toUpperCase()}${key.slice(1)} (Re ${re(n)})` })));
+    sel.addEventListener("change", () => { st.quality = sel.value; });
+    this._release(sel);
+    this.controls.push([sel, () => { if (sel.value !== st.quality) sel.value = st.quality; }]);
+    return this._el("div", { className: "row gap" }, this._el("label", { htmlFor: id, textContent: "Quality" }), sel);
+  }
+
+  _slider([label, attr, lo, hi, step, fmt, shapes], cls = attr === "wind" ? "row gap" : "row") {
     const st = this.st;
     const id = `ctl-${attr}`;
     const input = this._el("input", { id, type: "range", min: lo, max: hi, step, value: st[attr] });
@@ -198,7 +220,7 @@ export class Panel {
       out.value = fmt(st[attr]);
     });
     this._release(input);
-    const row = this._el("div", { className: attr === "wind" ? "row gap" : "row" },
+    const row = this._el("div", { className: cls },
                          this._el("label", { htmlFor: id, textContent: label }), input, out);
     this.controls.push([row, () => {
       row.hidden = shapes !== null && !shapes.includes(st.shape);
@@ -270,7 +292,7 @@ export class Panel {
     const st = this.st;
     const now = performance.now() / 1000;
     const sig = JSON.stringify([st.shape, st.view, st.axes, st.tracers, st.arrows, st.telltales, st.boat, st.polar,
-                                st.paused, st.help, Panel.SLIDERS.map((sl) => st[sl[1]])]);
+                                st.paused, st.help, st.quality, st.slowmo, Panel.SLIDERS.map((sl) => st[sl[1]])]);
     if (sig !== this.sig) {
       for (const [, update] of this.controls) update(st);
     } else if (lines.join("\n") === (this.lines || []).join("\n") || now - this.tText < 0.4) {

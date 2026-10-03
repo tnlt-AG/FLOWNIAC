@@ -1,8 +1,10 @@
 # FLOWNIAC web version
 
-The browser version of `Flowniac.py`: the same lattice-Boltzmann solver, written as WebGPU compute
-shaders (WGSL), with the same controls, keys, results and polar plot. Plain HTML, CSS and JavaScript
-modules: no build step, no dependencies.
+The browser version of FLOWNIAC and the one that is developed further. It started as a port of
+`Flowniac.py` (the desktop version, no longer developed): the same lattice-Boltzmann solver, written as
+WebGPU compute shaders (WGSL), with the same controls, keys, results and polar plot. Since then it got a
+Quality selector (switches the grid live), a Slow motion slider (keys `s`/`S`) and continuous smoke
+streaks. Plain HTML, CSS and JavaScript modules: no build step, no dependencies.
 
 ## Run it
 
@@ -16,15 +18,16 @@ Then open <http://localhost:8000>. Any static web host (e.g. GitHub Pages) works
 
 Needs a browser with WebGPU: current Chrome or Edge, Safari 26 or newer, Firefox 141 or newer on Windows.
 
-The URL takes the same options as the command line of `Flowniac.py`, for example
+The URL sets the start values, like the command line of `Flowniac.py`, for example
 `index.html?quality=high&shape=jib_main&aoa=15&wind-from=left&forces=drive&polar`:
-`quality` (auto, low, medium, high, ultra), `shape`, `aoa`, `camber`, `draft` (%), `wind`, `width`,
+`quality` (auto, low, medium, high, ultra; auto measures the GPU and picks the finest grid that still
+moves the flow one chord in 3 s), `shape`, `aoa`, `camber`, `draft` (%), `wind`, `width`,
 `height`, `heading`, `forces` (lift, drive), `view` (speed, vorticity, pressure, smoke), `no-boat`,
 `polar`, `wind-from` (top, left). The control column scales with the browser zoom (Ctrl +/-).
 
 ## Files
 
-| File | Mirrors in Flowniac.py |
+| File | Ported from Flowniac.py |
 |---|---|
 | `js/config.js` | Settings section, `State` |
 | `js/shaders.js` | the Taichi kernels and `@ti.func`s of `Solver` |
@@ -35,10 +38,10 @@ The URL takes the same options as the command line of `Flowniac.py`, for example
 | `js/main.js` | `main`, `Front`, `auto_quality` |
 | `js/luts.js` | generated from `build_luts` by `tools/make_luts.py` |
 
-## Keeping both versions identical
+## Solver parity with Flowniac.py
 
-The two versions are kept in step by hand: same constants, same kernels, same order of operations.
-After any change to the solver, change both and run the parity test:
+The flow solver (constants, kernels, order of operations) still matches `Flowniac.py`; the smoke, the
+quality selection and the playback speed no longer do. The parity test checks the solver:
 
 ```bash
 python web/tools/parity.py

@@ -1,4 +1,4 @@
-// Lattice-Boltzmann solver on the GPU (WebGPU). Mirrors class Solver of Flowniac.py: same sizes, same
+// Lattice-Boltzmann solver on the GPU (WebGPU). Ported from class Solver of Flowniac.py: same sizes, same
 // kernels (shaders.js), same methods in camelCase. GPU work is recorded into a command encoder that the
 // caller submits with submit(), so one frame needs only one wait for the GPU (readOut).
 
@@ -53,19 +53,21 @@ export class Solver {
     this.vh = this.vy1 - this.vy0;
     this.rotated = rotated;                       // picture turned 90 deg clockwise: wind from the top
     this.stepsPerChord = n / U_LAT;
-    // smoke tracers: nLines rake lines, 3 particles per cell so each line reads as a smoke streak
+    // smoke: nLines rake lines, each releasing 3 particles per cell of free stream so it reads as a streak.
+    // A line re-uses its particles in turn; with 4 per cell of domain length a particle is re-used only
+    // after 4/3 domain lengths of flow, so smoke slowed down in the wake still reaches the outlet
     this.nLines = nTracerLines;
-    this.perLine = 3 * this.nx;
+    this.smokePerCell = 3.0;
+    this.perLine = 4 * this.nx;
     this.nTracers = this.nLines * this.perLine;
     this.rakeX = 0.5 * n;
-    this.maxAge = 1.5 * this.nx / U_LAT;
+    this.released = 0.0;                          // particles released per line since resetTracers (mod perLine)
 
     this.cur = 0;
     this.geo = [SAIL, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0];
     this.gamma = 0.0;      // far-field circulation (lattice units), from the measured lift
     this.source = 0.0;     // far-field source strength, from the measured drag
     this.hullSig = null;
-    this.seed = 1;
 
     this.paramData = new ArrayBuffer(4 * PARAMS.length);
     this.paramView = new DataView(this.paramData);
@@ -151,6 +153,9 @@ export class Solver {
     this.draws = null;
     if (!format) return;
     this.draws = {};
+    // alpha blending for the soft edges of the smoke dots (the flow picture itself is opaque)
+    const blend = { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+                    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } };
     await Promise.all(Object.entries(render).map(async ([name, kernel]) => {
       const layout = layoutFor(kernel, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, "read-only-storage");
       const m = await module(name, kernel);
@@ -158,7 +163,7 @@ export class Solver {
         label: name,
         layout: d.createPipelineLayout({ bindGroupLayouts: [layout] }),
         vertex: { module: m, entryPoint: "vs" },
-        fragment: { module: m, entryPoint: "fs", targets: [{ format }] },
+        fragment: { module: m, entryPoint: "fs", targets: [{ format, blend }] },
         primitive: { topology: "triangle-list" },
       });
       this.draws[name] = { pipeline, group: groupsFor(kernel, layout)[0] };
@@ -297,7 +302,7 @@ export class Solver {
 
   // ---------------------------------------------------------------- smoke tracers
   resetTracers(enc) {
-    this.setParam("seed", this.seed++);
+    this.released = 0.0;
     this._pass(enc, (pass) => this._run(pass, "reset_tracers"));
   }
 
@@ -306,6 +311,12 @@ export class Solver {
     const nsub = Math.max(1, Math.ceil(steps * U_LAT * 3.0));   // at most ~1/3 cell per sub-step at 1 U
     this.setParam("dt", steps / nsub);
     this.setParam("nsub", nsub);
+    // particles each rake line releases in this frame: smokePerCell per cell the free stream moves
+    const next = this.released + steps * U_LAT * this.smokePerCell;
+    const first = Math.floor(this.released);
+    this.setParam("emit0", first % this.perLine);
+    this.setParam("emit_n", Math.min(Math.floor(next) - first, this.perLine));
+    this.released = next - this.perLine * Math.floor(first / this.perLine);
     this._pass(enc, (pass) => this._run(pass, "advect"));
   }
 
@@ -381,6 +392,11 @@ export class Solver {
     this.setParam("hull", hull ? 1 : 0);
     this.setParam("hull_r", hullR);
     ["smoke_r", "smoke_g", "smoke_b"].forEach((name, k) => this.setParam(name, smoke[k]));
+    // smoke dots grow with the picture: ~1/700 of its length along the wind, and wide enough that the
+    // particles overlap into a streak; 2 pixels at least, as before
+    const along = this.rotated ? fh : fw;
+    const perParticle = along / this.vw / this.smokePerCell;
+    this.setParam("dot", clipNum(Math.round(Math.max(along / 700.0, 1.3 * perParticle)), 2, 6));
     const pass = enc.beginRenderPass({
       colorAttachments: [{ view, loadOp: "clear", storeOp: "store", clearValue: [0.05, 0.05, 0.05, 1] }],
     });

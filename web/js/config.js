@@ -1,5 +1,5 @@
-// Settings and user state. Mirrors the "Settings" section and class State of Flowniac.py:
-// keep the two in step (same names in UPPER_CASE, same values).
+// Settings and user state. Started as a copy of the "Settings" section and class State of Flowniac.py
+// (same names in UPPER_CASE, same values); only the web version is developed further.
 
 export const RHO_AIR = 1.225;           // kg/m^3, sea level, 15 degC
 export const NU_AIR = 1.46e-5;          // m^2/s, kinematic viscosity of air at 15 degC
@@ -20,6 +20,7 @@ export const START_KICK = 0.5;              // up-draft behind the body at the s
 export const QUALITY_CELLS = { low: 64, medium: 100, high: 160, ultra: 256 };   // cells per chord
 export const AUTO_SECONDS_PER_CHORD = 3.0;  // "auto" picks the finest grid that moves the flow one chord in this time
 export const TARGET_FPS = 20;
+export const SLOW_MOTION = [0, 1, 2, 3, 5, 10, 20, 50];   // playback slower than the real wind; 0 = as fast as the GPU allows
 export const UI_SCALE = 2.0;            // line widths in the picture (the control column scales with the browser zoom)
 export const WIND_FROM = "top";         // "top": wind blows from the top of the picture (sailors' view); "left": landscape
 export const SOLVER_SHARE = 0.6;        // at least this fraction of each frame goes to the flow solver
@@ -79,7 +80,8 @@ export const HELP_LINES = [
   "  m/M  mast    g/G  jib gap",
   "  j/J  jib angle    o/O  jib overlap",
   "  r  reset flow    Backspace  clear polar",
-  "  Space  pause    i  help",
+  "  s/S  slow motion    Space  pause",
+  "  i  help",
 ];
 
 const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
@@ -100,6 +102,8 @@ export class State {
     this.width = 3.0;         // m, main chord ("sail width")
     this.height = 9.0;        // m, sail height (luff)
     this.heading = 30.0;      // deg, boat centreline to the wind (to the right); drawing and drive/side only
+    this.quality = "medium";  // grid preset (key of QUALITY_CELLS); main() sets the one it starts with
+    this.slowmo = 0;          // index into SLOW_MOTION
     this.view = 0;
     this.axes = 0;            // index into FORCE_AXES
     this.tracers = true;
@@ -152,6 +156,8 @@ export class State {
     this.width = clip(this.width, 0.5, 10.0);
     this.height = clip(this.height, 1.0, 40.0);
     this.heading = clip(this.heading, 0.0, 180.0);
+    if (!(this.quality in QUALITY_CELLS)) this.quality = "medium";
+    this.slowmo = clip(Math.round(this.slowmo), 0, SLOW_MOTION.length - 1);
     this.view = ((Math.trunc(this.view) % VIEWS.length) + VIEWS.length) % VIEWS.length;
     this.axes = ((Math.trunc(this.axes) % FORCE_AXES.length) + FORCE_AXES.length) % FORCE_AXES.length;
   }

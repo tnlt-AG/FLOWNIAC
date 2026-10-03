@@ -113,6 +113,10 @@ body {
   min-height: 1.75rem;
 }
 
+.row.wide-out {
+  grid-template-columns: 7.6rem 1fr 5.6rem;
+}
+
 .row[hidden] {
   display: none;
 }

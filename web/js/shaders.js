@@ -1,5 +1,5 @@
-// WGSL kernels of the flow solver and the picture. Mirrors the Taichi kernels of Flowniac.py one by one
-// (same names without the leading underscore); keep the two in step.
+// WGSL kernels of the flow solver and the picture. Ported one by one from the Taichi kernels of
+// Flowniac.py (same names without the leading underscore); the solver kernels still match it.
 //
 // Each kernel declares the buffers it uses; solver.js binds them in that order after the uniform
 // parameter block P (binding 0). Loops over the 9 lattice directions are unrolled here in JavaScript,
@@ -17,9 +17,9 @@ export const PARAMS = [
   ["mast_r", "f32"], ["jgap", "f32"], ["jover", "f32"], ["jang", "f32"],
   ["gam", "f32"], ["src", "f32"], ["view", "i32"], ["hull", "i32"],      // far field, picture
   ["hull_r", "f32"], ["fw", "f32"], ["fh", "f32"], ["dt", "f32"],
-  ["nsub", "i32"], ["seed", "u32"], ["hb0", "f32"], ["hb1", "f32"],      // tracers, hull pixel box
+  ["nsub", "i32"], ["pad0", "u32"], ["hb0", "f32"], ["hb1", "f32"],      // tracers, hull pixel box
   ["hb2", "f32"], ["hb3", "f32"], ["smoke_r", "f32"], ["smoke_g", "f32"],
-  ["smoke_b", "f32"], ["pad0", "f32"], ["pad1", "f32"], ["pad2", "f32"],
+  ["smoke_b", "f32"], ["dot", "f32"], ["emit0", "u32"], ["emit_n", "i32"],   // smoke dot size, smoke release
 ];
 
 /** Storage buffers: WGSL element type. "bbox_atomic" is the bbox buffer seen as atomics. */
@@ -67,7 +67,7 @@ const ROTATED: bool = ${sim.rotated};
 const N_LINES: i32 = ${sim.nLines};
 const PER_LINE: i32 = ${sim.perLine};
 const RAKE_X: f32 = ${fl(sim.rakeX)};
-const MAX_AGE: f32 = ${fl(sim.maxAge)};
+const SMOKE_PER_CELL: f32 = ${fl(sim.smokePerCell)};
 
 const U_LAT: f32 = ${fl(U_LAT)};
 const SMAGORINSKY: f32 = ${fl(SMAGORINSKY)};
@@ -109,8 +109,8 @@ ${PARAMS.map(([name, type]) => `  ${name}: ${type},`).join("\n")}
 struct Tracer {
   pos: vec2f,
   norm: vec2f,        // 0..1 across the flow picture
-  age: f32,
-  pad: f32,
+  pad0: f32,
+  pad1: f32,
 }
 `;
 }
@@ -315,17 +315,6 @@ fn far_velocity(i: i32, j: i32, gam: f32, src: f32) -> vec2f {
 
 fn lut_index(which: i32, t: f32) -> i32 {
   return which * 256 + i32(clamp(t, 0.0, 1.0) * 255.0);
-}
-
-// pseudo-random number in [0, 1) (PCG hash), replaces ti.random()
-fn pcg(x: u32) -> u32 {
-  let s = x * 747796405u + 2891336453u;
-  let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-  return (w >> 22u) ^ w;
-}
-
-fn rand(p: u32, salt: u32) -> f32 {
-  return f32(pcg(p ^ pcg(P.seed * 2u + salt)) >> 8u) / 16777216.0;
 }
 `;
 
@@ -790,9 +779,13 @@ ${LINE} {
   let line = p / PER_LINE;
   let k = p % PER_LINE;
   let y0 = PY + (f32(line) + 0.5 - 0.5 * f32(N_LINES)) * (2.2 * C / f32(N_LINES));
-  let x = RAKE_X + (f32(NX) - 2.0 - RAKE_X) * (f32(k) + rand(u32(p), 0u)) / f32(PER_LINE);
+  // as if the rake had been releasing smoke for a long time: particle k left it PER_LINE - k releases ago
+  // (the next release is particle 0); the ones that would be past the outlet wait out of view
+  var x = RAKE_X + f32(PER_LINE - k) / SMOKE_PER_CELL;
+  if (x >= f32(NX - 2)) {
+    x = f32(NX) - 1.0;
+  }
   tracers[p].pos = vec2f(x, y0);
-  tracers[p].age = rand(u32(p), 1u) * MAX_AGE;
 }`,
     },
 
@@ -805,10 +798,26 @@ ${LINE} {
   if (p >= N_LINES * PER_LINE) {
     return;
   }
+  // Each rake line releases smoke at a steady rate (SMOKE_PER_CELL particles per cell of free stream),
+  // re-using its particles in turn, the oldest first. This frame releases P.emit_n of them, starting with
+  // number P.emit0: each starts at the rake at its own moment within the frame and moves for the rest of
+  // the frame (same number of sub-steps, shorter ones). (Sending particles back to the rake when they left
+  // the domain made the streaks dashed: they arrived in clumps from the wake vortices, and a fast GPU
+  // dropped a whole frame's returns on one point.)
   let shape = P.shape;
-  let dt = P.dt;
+  let line = p / PER_LINE;
+  let y0 = PY + (f32(line) + 0.5 - 0.5 * f32(N_LINES)) * (2.2 * C / f32(N_LINES));
+  let slot = (p % PER_LINE - i32(P.emit0) + PER_LINE) % PER_LINE;
+  var dt = P.dt;
   var pos = tracers[p].pos;
-  for (var s = 0; s < P.nsub; s++) {
+  if (slot < P.emit_n) {
+    let frame_steps = P.dt * f32(P.nsub);
+    let released = (f32(slot) + 0.5) / f32(P.emit_n) * frame_steps;   // steps after the frame started
+    pos = vec2f(RAKE_X, y0);
+    dt = (frame_steps - released) / f32(P.nsub);
+  }
+  let waiting = pos.x >= f32(NX - 2);              // parked past the outlet until its next release
+  for (var s = 0; s < select(P.nsub, 0, waiting); s++) {
     let u1 = sample_vel(pos);
     let u2 = sample_vel(pos + 0.5 * dt * u1);
     let nw = pos + dt * u2;
@@ -829,20 +838,12 @@ ${LINE} {
       pos = nw;
     }
   }
-  var age = tracers[p].age + dt * f32(P.nsub);
-  let line = p / PER_LINE;
-  let y0 = PY + (f32(line) + 0.5 - 0.5 * f32(N_LINES)) * (2.2 * C / f32(N_LINES));
   let i = i32(clamp(pos.x, 0.0, f32(NX) - 1.0));
   let j = i32(clamp(pos.y, 0.0, f32(NY) - 1.0));
-  if (pos.x >= f32(NX - 2)) {
-    pos = vec2f(RAKE_X + (pos.x - f32(NX - 2)), y0);   // keeps the spacing of the streak
-    age = 0.0;
-  } else if (pos.y < 1.0 || pos.y > f32(NY - 2) || mask[ix(i, j)] != 0 || age > MAX_AGE) {
-    pos = vec2f(RAKE_X, y0);
-    age = 0.0;
+  if (pos.x >= f32(NX - 2) || pos.y < 1.0 || pos.y > f32(NY - 2) || mask[ix(i, j)] != 0) {
+    pos = vec2f(f32(NX) - 1.0, y0);                // out of view until its next release
   }
   tracers[p].pos = pos;
-  tracers[p].age = age;
   tracers[p].norm = vec2f((pos.x - VX0) / VW, (pos.y - VY0) / VH);
 }`,
     },
@@ -1014,24 +1015,35 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
 }`,
     },
 
-    // smoke particles as 2x2 pixel dots
+    // smoke particles as round dots of P.dot pixels with an anti-aliased edge (blended), so the streaks
+    // look smooth instead of stair-stepped; larger on big, high-resolution pictures
     splat_tracers: {
       uses: ["tracers"], code: /* wgsl */ `
+struct DotOut {
+  @builtin(position) pos: vec4f,
+  @location(0) off: vec2f,          // pixels from the dot centre
+}
+
 @vertex
-fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) p: u32) -> @builtin(position) vec4f {
+fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) p: u32) -> DotOut {
   let q = tracers[p].norm;
   var pix = vec2f(q.x * P.fw, (1.0 - q.y) * P.fh);
   if (ROTATED) {
     pix = vec2f(q.y * P.fw, q.x * P.fh);
   }
-  let corner = vec2f(select(0.0, 2.0, v == 1u || v == 4u || v == 5u), select(0.0, 2.0, v == 2u || v == 3u || v == 5u));
-  let xy = floor(pix) + corner;
-  return vec4f(xy.x / P.fw * 2.0 - 1.0, 1.0 - xy.y / P.fh * 2.0, 0.0, 1.0);
+  let h = 0.5 * P.dot + 1.0;        // half size of the quad: the dot plus a pixel for the soft edge
+  let corner = vec2f(select(-h, h, v == 1u || v == 4u || v == 5u), select(-h, h, v == 2u || v == 3u || v == 5u));
+  let xy = pix + corner;
+  var o: DotOut;
+  o.pos = vec4f(xy.x / P.fw * 2.0 - 1.0, 1.0 - xy.y / P.fh * 2.0, 0.0, 1.0);
+  o.off = corner;
+  return o;
 }
 
 @fragment
-fn fs() -> @location(0) vec4f {
-  return vec4f(P.smoke_r, P.smoke_g, P.smoke_b, 1.0);
+fn fs(d: DotOut) -> @location(0) vec4f {
+  let cover = clamp(0.5 * P.dot + 0.5 - length(d.off), 0.0, 1.0);
+  return vec4f(P.smoke_r, P.smoke_g, P.smoke_b, cover);
 }`,
     },
   };

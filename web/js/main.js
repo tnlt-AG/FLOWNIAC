@@ -1,10 +1,10 @@
-// FLOWNIAC web version: main loop, picture and quality selection. Mirrors main(), Front/GGUIFront and
-// auto_quality() of Flowniac.py. URL parameters replace the command-line options, e.g.
+// FLOWNIAC web version: main loop, picture, quality selection and playback speed. Started from main(),
+// Front/GGUIFront and auto_quality() of Flowniac.py. URL parameters set the start values, e.g.
 //   index.html?quality=high&shape=jib_main&aoa=15&wind-from=left&forces=drive&polar
 
 import {
-  AUTO_SECONDS_PER_CHORD, DOMAIN_CHORDS, QUALITY_CELLS, SAIL_SHAPES, SHAPES, SOLVER_SHARE, State, TARGET_FPS,
-  TELLTALES, UI_SCALE, U_LAT, WIND_FROM,
+  AUTO_SECONDS_PER_CHORD, DOMAIN_CHORDS, QUALITY_CELLS, SAIL_SHAPES, SHAPES, SLOW_MOTION, SOLVER_SHARE, State,
+  TARGET_FPS, TELLTALES, UI_SCALE, U_LAT, WIND_FROM,
 } from "./config.js";
 import { initGPU } from "./gpu.js";
 import { PolarPlot } from "./polar.js";
@@ -44,19 +44,31 @@ function secondsPerChord(n, mlups) {
 /** Measure the solver speed on the 'medium' grid and pick the finest preset that is fast enough. */
 async function autoQuality(device) {
   const sim = await Solver.create(device, QUALITY_CELLS.medium, { nTracerLines: 1 });
+  const run = async (steps) => {
+    const enc = device.createCommandEncoder();
+    sim.advance(enc, steps);
+    sim.submit(enc);
+    await device.queue.onSubmittedWorkDone();
+  };
   let enc = device.createCommandEncoder();
   sim.setGeometry(enc, new State());
   sim.advance(enc, 10);
   sim.submit(enc);
   await device.queue.onSubmittedWorkDone();
+  // batches of at least ~30 ms, so the wait for the GPU after each batch hardly counts: with fixed 20-step
+  // batches a fast GPU spent most of the test waiting and was rated 3-4x too slow
+  let batch = 20;
+  for (;;) {
+    const t = performance.now();
+    await run(batch);
+    if (performance.now() - t >= 30 || batch >= 4096) break;
+    batch *= 2;
+  }
   const t0 = performance.now();
   let steps = 0;
   while (performance.now() - t0 < 1000) {
-    enc = device.createCommandEncoder();
-    sim.advance(enc, 20);
-    sim.submit(enc);
-    await device.queue.onSubmittedWorkDone();
-    steps += 20;
+    await run(batch);
+    steps += batch;
   }
   const mlups = sim.nx * sim.ny * steps / ((performance.now() - t0) / 1000) / 1e6;
   sim.destroy();
@@ -83,6 +95,12 @@ class Front {
     this.fw = 1;
     this.fh = 1;
     new ResizeObserver(() => this._layout()).observe(this.flow);
+    this._layout();
+  }
+
+  /** Show another solver (after a quality change). */
+  setSim(sim) {
+    this.sim = sim;
     this._layout();
   }
 
@@ -168,10 +186,10 @@ async function main() {
   }
   device.lost.then((info) => showMessage(`The graphics device was lost (${info.message}). Reload the page.`));
   showMessage("Measuring GPU speed for quality selection ...");
-  const quality = args.quality === "auto" ? await autoQuality(device) : args.quality;
-  const n = QUALITY_CELLS[quality];
+  let quality = args.quality === "auto" ? await autoQuality(device) : args.quality;
 
   const st = new State();
+  st.quality = quality;
   st.shape = SHAPES.findIndex(([key]) => key === args.shape);
   st.aoa = args.aoa;
   st.camber = args.camber / 100.0;
@@ -187,7 +205,10 @@ async function main() {
   st.clamp();
 
   const format = navigator.gpu.getPreferredCanvasFormat();
-  const sim = await Solver.create(device, n, { rotated: args.windFrom === "top", format });
+  const rotated = args.windFrom === "top";
+  const logGrid = (s) => console.log(`Grid ${s.nx} x ${s.ny} (${s.n} cells per chord), simulated Re ` +
+                                     `${s.reSim.toPrecision(3)}, tau0 = ${s.tau0.toFixed(5)}, quality '${quality}'`);
+  let sim = await Solver.create(device, QUALITY_CELLS[quality], { rotated, format });
   showMessage("");
   document.getElementById("stage").classList.toggle("landscape", !sim.rotated);
   const front = new Front(sim, device, format);
@@ -195,22 +216,44 @@ async function main() {
   const keys = new Keys(st);
   const polar = new PolarPlot(document.getElementById("polar"));
 
-  console.log(`Grid ${sim.nx} x ${sim.ny} (${n} cells per chord), simulated Re ${sim.reSim.toPrecision(3)}, ` +
-              `tau0 = ${sim.tau0.toFixed(5)}, quality '${quality}'`);
-  const avg = new Averager(sim.stepsPerChord);
+  logGrid(sim);
+  let avg = new Averager(sim.stepsPerChord);
   let geometry = null;
-  let stepsPerFrame = 10;
+  let stepsPerFrame = 10;                          // what the GPU manages within the frame budget
+  let allowance = 0.0;                             // solver steps the slow-motion setting still allows
   let fps = 0.0;
   let sps = 0.0;                                   // solver steps per second, smoothed
   let tLast = performance.now() / 1000;
+  let tPace = tLast;                               // start of the previous frame, for slow motion
   let tStep = 0.0;
   let overhead = 0.02;
   let unstableUntil = 0.0;
   let lee = null;                                  // time-averaged lee-side flow of the main sail
   window.flowniac = { sim, st, avg, timing: {} };   // for inspection from the browser console
 
+  /** New grid after a change in the Quality selector: the flow starts again, the polar plot is kept. */
+  async function switchQuality() {
+    showMessage(`Switching to quality '${st.quality}' ...`);
+    const next = await Solver.create(device, QUALITY_CELLS[st.quality], { rotated, format });
+    sim.destroy();
+    sim = next;
+    quality = st.quality;
+    front.setSim(sim);
+    avg = new Averager(sim.stepsPerChord);
+    geometry = null;
+    lee = null;
+    stepsPerFrame = 10;
+    tStep = 0.0;
+    sps = 0.0;
+    allowance = 0.0;
+    Object.assign(window.flowniac, { sim, avg });
+    logGrid(sim);
+    showMessage("");
+  }
+
   async function frame() {
     keys.held();
+    if (st.quality !== quality) await switchQuality();
     const sail = SAIL_SHAPES.includes(st.shape);
     let enc = device.createCommandEncoder();
     if (st.geometry() !== geometry) {
@@ -230,7 +273,24 @@ async function main() {
       polar.clear();
     }
 
-    const steps = st.paused ? 0 : stepsPerFrame;
+    // slow motion: the simulated air may move only 1/s of the real wind's chords per second; the steps
+    // this allows accumulate over the frames (a few frames may run no step at very slow settings)
+    const tNow = performance.now() / 1000;
+    const elapsed = Math.min(tNow - tPace, 0.25);   // a stalled frame does not cause a burst afterwards
+    tPace = tNow;
+    let steps = st.paused ? 0 : stepsPerFrame;
+    let throttled = false;
+    const slow = SLOW_MOTION[st.slowmo];
+    if (slow > 0 && steps > 0) {
+      allowance += (st.wind / st.width) / slow * sim.stepsPerChord * elapsed;
+      if (allowance < steps) {
+        steps = Math.floor(allowance);
+        throttled = true;
+      }
+      allowance = Math.min(allowance - steps, stepsPerFrame);
+    } else {
+      allowance = 0.0;
+    }
     let tSolver = performance.now();
     sim.advance(enc, steps);
     const probes = { lee: sail, telltales: sail && st.telltales };
@@ -267,7 +327,7 @@ async function main() {
     const c = avg.value;
     sim.setFarField(c[0][1], c[0][0], st.refFraction());
     const r = results(st, c);
-    if (avg.ready) polar.record(st.configLabel(), st.aoa, r.cl, r.cd);
+    if (avg.ready) polar.record(`${st.configLabel()}, ${quality}`, st.aoa, r.cl, r.cd);   // own curve per grid (Re)
     polar.visible = st.polar;
     polar.update(r.ar, [st.aoa, r.cl, r.cd]);
 
@@ -283,9 +343,10 @@ async function main() {
     const dt = Math.max(now - tLast, 1e-4);
     tLast = now;
     fps = fps > 0 ? 0.9 * fps + 0.1 / dt : 1.0 / dt;
-    if (steps > 0) {
-      sps = sps > 0 ? 0.9 * sps + 0.1 * steps / dt : steps / dt;
-      // smoothed timings; single slow frames (plot redraw, geometry change) are clipped
+    if (!st.paused) sps = sps > 0 ? 0.9 * sps + 0.1 * steps / dt : steps / dt;
+    if (steps > 0 && !throttled) {
+      // smoothed timings; single slow frames (plot redraw, geometry change) are clipped. Frames held back
+      // by slow motion are left out: they say nothing about how many steps the GPU could do
       tStep = tStep ? 0.8 * tStep + 0.2 * (tSolver / steps) : tSolver / steps;
       overhead = 0.8 * overhead + 0.2 * Math.min(Math.max(dt - tSolver, 0.0), 0.1);
       let want = Math.max((1.0 / TARGET_FPS - overhead) / tStep, SOLVER_SHARE / (1.0 - SOLVER_SHARE) * overhead / tStep);
