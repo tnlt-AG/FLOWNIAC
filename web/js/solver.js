@@ -5,7 +5,7 @@
 import {
   CYLINDER, CYLINDER_DIAMETER, DOMAIN_CHORDS, HULL_BEAM, HULL_LENGTH, HULL_MAST, HULL_POINTS, HULL_TRANSOM,
   HULL_WIDEST, LEE_SAMPLES, PIVOT_CHORDS, RE_PER_CELL2, SAIL, SIDE_SPONGE_CHORDS, SPONGE_CHORDS, TELLTALES, U_LAT,
-  WIND_FROM,
+  WIND_FROM, jibPlacement,
 } from "./config.js";
 import { LUTS } from "./luts.js";
 import { OUT_FORCE, OUT_LEE, OUT_RHO, OUT_SIZE, OUT_TT, PARAMS, TT_STRIDE, buildKernels } from "./shaders.js";
@@ -225,9 +225,9 @@ export class Solver {
 
   setGeometry(enc, st) {
     const c = this.n;
-    this.geo = [st.shape, radians(st.aoa), st.camber, st.draft, 0.5 * st.mast * c,
-                st.jib_gap * c, st.jib_overlap * c, radians(st.jib_angle)];
-    ["shape", "a", "m", "p", "mast_r", "jgap", "jover", "jang"].forEach((name, k) => this.setParam(name, this.geo[k]));
+    const jib = jibPlacement(st);
+    this.geo = [st.shape, radians(st.aoa), st.camber, st.draft, 0.5 * st.mast * c, jib.tx * c, jib.ty * c, jib.ang];
+    ["shape", "a", "m", "p", "mast_r", "jtx", "jty", "jang"].forEach((name, k) => this.setParam(name, this.geo[k]));
     this._pass(enc, (pass) => {
       for (const name of ["build_mask", "apply_mask", "build_links", "reset_bbox", "find_bbox", "wall_damping",
                           "build_wall"]) {

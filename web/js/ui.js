@@ -8,8 +8,6 @@ import {
 import { LUTS } from "./luts.js";
 import { fmtNum } from "./results.js";
 
-const sign = (v, s) => (v >= 0 ? "+" : "") + s;
-
 /** Slow-motion setting as text: as fast as the GPU allows, real time, or N times slower than the real wind. */
 const fmtSlow = (k) => {
   const s = SLOW_MOTION[Math.round(k)];
@@ -19,9 +17,9 @@ const fmtSlow = (k) => {
 /** Keyboard handling. Arrow keys auto-repeat while held (own timing, as in the desktop version). */
 export class Keys {
   static STEP = { aoa: 1.0, camber: 0.01, draft: 0.05, wind: 1.0, width: 0.25, height: 1.0,
-                  mast: 0.01, jib_gap: 0.01, jib_angle: 1.0, jib_overlap: 0.05, heading: 5.0, slowmo: 1 };
-  static LETTER = { d: "draft", w: "wind", c: "width", h: "height", m: "mast", g: "jib_gap",
-                    j: "jib_angle", o: "jib_overlap", b: "heading", s: "slowmo" };
+                  mast: 0.01, jib_aoa: 1.0, heading: 5.0, slowmo: 1 };
+  static LETTER = { d: "draft", w: "wind", c: "width", h: "height", m: "mast", j: "jib_aoa", b: "heading",
+                    s: "slowmo" };
   static HELD = { ArrowUp: ["aoa", 1], ArrowDown: ["aoa", -1], ArrowRight: ["camber", 1], ArrowLeft: ["camber", -1] };
 
   constructor(st) {
@@ -126,9 +124,7 @@ export class Panel {
     ["Camber", "camber", 0.0, 0.2, 0.005, (v) => `${(100 * v).toFixed(1)} %`, [SAIL, MAST_SAIL, JIB_MAIN]],
     ["Draft position", "draft", 0.25, 0.65, 0.01, (v) => `${(100 * v).toFixed(0)} %`, [SAIL, MAST_SAIL, JIB_MAIN]],
     ["Mast diameter", "mast", 0.01, 0.12, 0.005, (v) => `${(100 * v).toFixed(1)} %`, [MAST_SAIL, JIB_MAIN]],
-    ["Jib slot", "jib_gap", 0.02, 0.25, 0.005, (v) => `${(100 * v).toFixed(1)} %`, [JIB_MAIN]],
-    ["Jib overlap", "jib_overlap", -0.2, 0.4, 0.01, (v) => `${(100 * v).toFixed(0)} %`, [JIB_MAIN]],
-    ["Jib angle", "jib_angle", -20.0, 15.0, 0.5, (v) => sign(v, `${v.toFixed(1)}°`), [JIB_MAIN]],
+    ["Jib angle of attack", "jib_aoa", -30.0, 90.0, 0.5, (v) => `${v.toFixed(1)}°`, [JIB_MAIN]],
     ["Wind", "wind", 1.0, 20.0, 0.5, (v) => `${v.toFixed(1)} m/s`, null],
     ["Sail width", "width", 0.5, 10.0, 0.05, (v) => `${v.toFixed(2)} m`, null],
     ["Sail height", "height", 1.0, 40.0, 0.5, (v) => `${v.toFixed(1)} m`, null],

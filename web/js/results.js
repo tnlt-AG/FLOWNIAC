@@ -3,7 +3,7 @@
 
 import {
   AVERAGE_CHORDS, CYLINDER, ELEMENT_NAMES, FS_FORM_FACTOR, JIB_MAIN, MAST_SAIL, NACA0012, NACA2412, NU_AIR, PLATE,
-  QUALITY_CELLS, RHO_AIR, SETTLE_CHORDS, SHAPES, SPAN_EFFICIENCY, U_LAT,
+  QUALITY_CELLS, RHO_AIR, SETTLE_CHORDS, SHAPES, SPAN_EFFICIENCY, U_LAT, jibAoaLimit, jibSlot,
 } from "./config.js";
 
 const radians = (deg) => deg * Math.PI / 180;
@@ -181,6 +181,11 @@ export function resultLines(st, r, avg, sim, info, lee = null) {
   for (const [name, cl, cd] of r.elements) {
     lines.push(`  ${name.padEnd(4)}      Cl ${cl.toFixed(2)}  Cd ${cd.toFixed(3)}`);
   }
+  if (st.shape === JIB_MAIN) {
+    const { slot, overlap } = jibSlot(st);
+    lines.push(`Jib slot ${(100 * slot).toFixed(1)}%  overlap ${(100 * overlap).toFixed(0)}%`);
+    if (st.jib_aoa >= jibAoaLimit(st) - 1e-6) lines.push("  jib sheeted in as far as it goes");
+  }
   if (lee !== null) {
     const sep = lee.map((v) => v < 0.0);
     const who = st.shape === JIB_MAIN ? "Main leeward" : "Leeward";
@@ -194,7 +199,7 @@ export function resultLines(st, r, avg, sim, info, lee = null) {
   lines.push(`Whole sail  Cd ${r.cd3.toFixed(3)}  L/D ${fmtLd(r.cl, r.cd3)}  (AR ${r.ar.toFixed(1)})`);
   if ((st.boat || st.axes === 1) && st.shape !== CYLINDER) {
     let boom = `Boom ${(st.heading - st.aoa).toFixed(0)}° off centreline`;
-    if (st.shape === JIB_MAIN) boom += `, jib ${(st.heading - st.aoa - st.jib_angle).toFixed(0)}°`;
+    if (st.shape === JIB_MAIN) boom += `, jib ${(st.heading - st.jib_aoa).toFixed(0)}°`;
     lines.push(boom);
   }
   if (st.axes === 1) {

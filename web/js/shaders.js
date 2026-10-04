@@ -14,7 +14,7 @@ import {
 /** Uniform parameter block P, shared by all kernels: [name, type], 4 bytes each. */
 export const PARAMS = [
   ["shape", "i32"], ["a", "f32"], ["m", "f32"], ["p", "f32"],            // geometry (Solver.geo)
-  ["mast_r", "f32"], ["jgap", "f32"], ["jover", "f32"], ["jang", "f32"],
+  ["mast_r", "f32"], ["jtx", "f32"], ["jty", "f32"], ["jang", "f32"],
   ["gam", "f32"], ["src", "f32"], ["view", "i32"], ["hull", "i32"],      // far field, picture
   ["hull_r", "f32"], ["fw", "f32"], ["fh", "f32"], ["dt", "f32"],
   ["nsub", "i32"], ["favg", "u32"], ["hb0", "f32"], ["hb1", "f32"],      // tracers, force mode, hull box
@@ -199,20 +199,17 @@ fn to_body(x: f32, y: f32, a: f32) -> vec2f {
   return vec2f(dx * ca - dy * sa + 0.5 * C, dx * sa + dy * ca);
 }
 
-// body-frame point in the jib's own frame (luff at 0, chord along +x). The jib leech sits jover
-// behind the main luff, with a slot of width jgap to the lee side of the main.
-fn jib_frame(xb: f32, yb: f32, m: f32, p: f32, jgap: f32, jover: f32, jang: f32) -> vec2f {
-  let xo = clamp(jover / C, 0.0, 1.0);
-  let te = vec2f(jover, mean_line(xo, m, p).x * C + jgap);
+// body-frame point in the jib's own frame (luff at 0, chord along +x). The jib tack (jtx, jty) is at the bow
+// of the boat; jang is the angle of the jib chord to the main chord (config.js, jibPlacement).
+fn jib_frame(xb: f32, yb: f32, jtx: f32, jty: f32, jang: f32) -> vec2f {
   let cj = cos(jang);
   let sj = sin(jang);
-  let le = te - JIB_CHORD * C * vec2f(cj, -sj);
-  return vec2f((xb - le.x) * cj - (yb - le.y) * sj, (xb - le.x) * sj + (yb - le.y) * cj);
+  return vec2f((xb - jtx) * cj - (yb - jty) * sj, (xb - jtx) * sj + (yb - jty) * cj);
 }
 
 // position of the point along, and signed offset from, each zero-thickness membrane (cells):
 // (x along main / plate, offset, x along jib, offset)
-fn membranes(x: f32, y: f32, shape: i32, a: f32, m: f32, p: f32, jgap: f32, jover: f32, jang: f32) -> vec4f {
+fn membranes(x: f32, y: f32, shape: i32, a: f32, m: f32, p: f32, jtx: f32, jty: f32, jang: f32) -> vec4f {
   let b = to_body(x, y, a);
   var mm = m;
   var pp = p;
@@ -226,7 +223,7 @@ fn membranes(x: f32, y: f32, shape: i32, a: f32, m: f32, p: f32, jgap: f32, jove
   var xj = -1.0;
   var gj = 1.0;
   if (shape == JIB_MAIN) {
-    let jf = jib_frame(b.x, b.y, m, p, jgap, jover, jang);
+    let jf = jib_frame(b.x, b.y, jtx, jty, jang);
     xj = jf.x;
     gj = jf.y - mean_line(clamp(xj / (JIB_CHORD * C), 0.0, 1.0), m, p).x * JIB_CHORD * C;
   }
@@ -249,7 +246,7 @@ fn crosses(g0: f32, g1: f32, x0: f32, x1: f32, span: f32) -> bool {
 // which part covers the point (x, y), in cells: 0 air, 1 main sail / body, 2 jib, 3 mast.
 // Sails and plate are zero-thickness membranes in the simulation (they block lattice links, see
 // build_links); only for drawing do they get the thickness th (th = 0: they are not solid).
-fn body_at(x: f32, y: f32, shape: i32, a: f32, m: f32, p: f32, mast_r: f32, jgap: f32, jover: f32, jang: f32,
+fn body_at(x: f32, y: f32, shape: i32, a: f32, m: f32, p: f32, mast_r: f32, jtx: f32, jty: f32, jang: f32,
            th: f32) -> i32 {
   let bd = to_body(x, y, a);
   let xb = bd.x;
@@ -261,7 +258,7 @@ fn body_at(x: f32, y: f32, shape: i32, a: f32, m: f32, p: f32, mast_r: f32, jgap
         s = 1;
       }
       if (shape == JIB_MAIN) {
-        let jf = jib_frame(xb, yb, m, p, jgap, jover, jang);
+        let jf = jib_frame(xb, yb, jtx, jty, jang);
         if (in_membrane(jf.x, jf.y, JIB_CHORD * C, m, p, th)) {
           s = 2;
         }
@@ -292,7 +289,7 @@ fn body_at(x: f32, y: f32, shape: i32, a: f32, m: f32, p: f32, mast_r: f32, jgap
 }
 
 // world position and unit tangent (towards the leech) at fraction xn along a sail (1 main, 2 jib)
-fn sail_frame(xn: f32, sail: i32, a: f32, m: f32, p: f32, jgap: f32, jover: f32, jang: f32) -> vec4f {
+fn sail_frame(xn: f32, sail: i32, a: f32, m: f32, p: f32, jtx: f32, jty: f32, jang: f32) -> vec4f {
   let ml = mean_line(xn, m, p);
   var L = C;
   if (sail == 2) {
@@ -301,12 +298,9 @@ fn sail_frame(xn: f32, sail: i32, a: f32, m: f32, p: f32, jgap: f32, jover: f32,
   var q = vec2f(xn * L, ml.x * L);                // in the sail's own frame
   var t = normalize(vec2f(1.0, ml.y));
   if (sail == 2) {                                // jib frame -> main body frame
-    let xo = clamp(jover / C, 0.0, 1.0);
-    let te = vec2f(jover, mean_line(xo, m, p).x * C + jgap);
     let cj = cos(jang);
     let sj = sin(jang);
-    let le = te - JIB_CHORD * C * vec2f(cj, -sj);
-    q = le + vec2f(q.x * cj + q.y * sj, -q.x * sj + q.y * cj);
+    q = vec2f(jtx, jty) + vec2f(q.x * cj + q.y * sj, -q.x * sj + q.y * cj);
     t = vec2f(t.x * cj + t.y * sj, -t.x * sj + t.y * cj);
   }
   let ca = cos(a);                                // main body frame -> world
@@ -437,7 +431,7 @@ ${each(K9, (k) => `  fa[${k} * N + c] = f[${k}];\n  fb[${k} * N + c] = f[${k}];`
       uses: ["mask_new"], size: "grid", code: /* wgsl */ `
 ${GRID} {
   ${GRID_IJ}
-  var s = body_at(f32(i), f32(j), P.shape, P.a, P.m, P.p, P.mast_r, P.jgap, P.jover, P.jang, 0.0);
+  var s = body_at(f32(i), f32(j), P.shape, P.a, P.m, P.p, P.mast_r, P.jtx, P.jty, P.jang, 0.0);
   if (i == 0 || j == 0 || i == NX - 1 || j == NY - 1) {
     s = 0;
   }
@@ -468,9 +462,9 @@ ${GRID} {
   // trailing edge, which is thinner than a cell over its last few percent of chord
   if (shape == SAIL || shape == MAST_SAIL || shape == JIB_MAIN || shape == PLATE
       || shape == NACA0012 || shape == NACA2412) {
-    let q0 = membranes(f32(i), f32(j), shape, P.a, P.m, P.p, P.jgap, P.jover, P.jang);
+    let q0 = membranes(f32(i), f32(j), shape, P.a, P.m, P.p, P.jtx, P.jty, P.jang);
 ${each(K9.slice(1), (k) => `    {
-      let q1 = membranes(f32(i + ${E[k][0]}), f32(j + ${E[k][1]}), shape, P.a, P.m, P.p, P.jgap, P.jover, P.jang);
+      let q1 = membranes(f32(i + ${E[k][0]}), f32(j + ${E[k][1]}), shape, P.a, P.m, P.p, P.jtx, P.jty, P.jang);
       if (crosses(q0.y, q1.y, q0.x, q1.x, C)) {
         bits |= ${1 << k}u;
       }
@@ -563,7 +557,7 @@ ${GRID} {
       }
       w = vec2f(nb.x * ca + nb.y * sa, -nb.x * sa + nb.y * ca);
     } else if (((lk >> 8u) & 0x1FEu) != 0u) {      // jib
-      let jf = jib_frame(b.x, b.y, P.m, P.p, P.jgap, P.jover, P.jang);
+      let jf = jib_frame(b.x, b.y, P.jtx, P.jty, P.jang);
       let ml = mean_line(clamp(jf.x / (JIB_CHORD * C), 0.0, 1.0), P.m, P.p);
       var nj = normalize(vec2f(-ml.y, 1.0));
       if (jf.y - ml.x * JIB_CHORD * C < 0.0) {
@@ -870,7 +864,7 @@ ${LINE} {
   let side = TT_SIDE[k];
   var count = 0;
   if (sail == 1 || shape == JIB_MAIN) {
-    let f = sail_frame(TT_POS[k], sail, P.a, P.m, P.p, P.jgap, P.jover, P.jang);
+    let f = sail_frame(TT_POS[k], sail, P.a, P.m, P.p, P.jtx, P.jty, P.jang);
     let t = f.zw;
     let root = f.xy;
     var pos = root + 1.0 * side * vec2f(-t.y, t.x);    // tied on just off the cloth
@@ -890,8 +884,8 @@ ${LINE} {
         }
         let q = pos + seg * d;
         // the ribbon cannot pass through the cloth or the mast
-        let q0 = membranes(pos.x, pos.y, shape, P.a, P.m, P.p, P.jgap, P.jover, P.jang);
-        let q1 = membranes(q.x, q.y, shape, P.a, P.m, P.p, P.jgap, P.jover, P.jang);
+        let q0 = membranes(pos.x, pos.y, shape, P.a, P.m, P.p, P.jtx, P.jty, P.jang);
+        let q1 = membranes(q.x, q.y, shape, P.a, P.m, P.p, P.jtx, P.jty, P.jang);
         if (crosses(q0.y, q1.y, q0.x, q1.x, C)) {
           alive = false;
         }
@@ -969,8 +963,8 @@ ${LINE} {
     let u2 = sample_vel(pos + 0.5 * dt * u1);
     let nw = pos + dt * u2;
     // smoke cannot pass through a sail
-    let q0 = membranes(pos.x, pos.y, shape, P.a, P.m, P.p, P.jgap, P.jover, P.jang);
-    let q1 = membranes(nw.x, nw.y, shape, P.a, P.m, P.p, P.jgap, P.jover, P.jang);
+    let q0 = membranes(pos.x, pos.y, shape, P.a, P.m, P.p, P.jtx, P.jty, P.jang);
+    let q1 = membranes(nw.x, nw.y, shape, P.a, P.m, P.p, P.jtx, P.jty, P.jang);
     var blocked = false;
     if (shape == SAIL || shape == MAST_SAIL || shape == JIB_MAIN || shape == PLATE
         || shape == NACA0012 || shape == NACA2412) {
@@ -1150,7 +1144,7 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
     for (var su = 0; su < 3; su++) {
       for (var sv = 0; sv < 3; sv++) {
         let s = body_at(x + f32(su - 1) * sx / 3.0, y + f32(sv - 1) * sx / 3.0,
-                        P.shape, P.a, P.m, P.p, P.mast_r, P.jgap, P.jover, P.jang, th);
+                        P.shape, P.a, P.m, P.p, P.mast_r, P.jtx, P.jty, P.jang, th);
         if (s != 0) {
           cover += 1.0 / 9.0;
           sid = s;

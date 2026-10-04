@@ -45,6 +45,8 @@ export const SETTLE_CHORDS = 2.0;       // flow passes (in chords) ignored after
 export const AVERAGE_CHORDS = 5.0;      // averaging length before a point is added to the polar plot (shedding is slow)
 
 export const JIB_CHORD = 0.7;           // jib chord as a fraction of the main chord
+export const JIB_AOA_DEFAULT = 5.0;     // jib angle of attack at the start (best L/D with the main at 12 deg, heading 30)
+export const JIB_MIN_SLOT = 0.02;       // the jib angle of attack stops where this slot (fraction of main chord) remains
 export const DRAW_THICKNESS = 0.01;     // drawn thickness of sails and plate (fraction of chord); they are simulated as zero
 export const CYLINDER_DIAMETER = 0.4;   // cylinder diameter as a fraction of the chord
 export const HULL_LENGTH = 1.5;         // dinghy outline (drawing only): length / main chord, about Laser proportions
@@ -93,8 +95,7 @@ export const HELP_LINES = [
   "  b/B  boat heading    n  boat",
   "  x  forces: lift/drag or drive/side",
   "  w/W  wind    c/C  width    h/H  height",
-  "  m/M  mast    g/G  jib gap",
-  "  j/J  jib angle    o/O  jib overlap",
+  "  m/M  mast    j/J  jib angle of attack",
   "  r  reset flow    Backspace  clear polar",
   "  s/S  slow motion    Space  pause",
   "  i  help",
@@ -102,6 +103,73 @@ export const HELP_LINES = [
 
 const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const round = (v, digits) => Number(v.toFixed(digits));
+const radians = (deg) => deg * Math.PI / 180;
+
+/** NACA 4-digit mean line: [y/c, dy/dx] at x/c = x for camber m at position p (as mean_line in shaders.js). */
+function meanLine(x, m, p) {
+  if (m <= 0.0) return [0.0, 0.0];
+  if (x < p) return [m / (p * p) * (2 * p * x - x * x), 2 * m / (p * p) * (p - x)];
+  const q = (1 - p) ** 2;
+  return [m / q * (1 - 2 * p + 2 * p * x - x * x), 2 * m / q * (p - x)];
+}
+
+/**
+ * Where the jib sits, in the frame of the main sail (luff at 0, chord along +x, lee side +y; in main chords):
+ * its tack at the bow of the boat (HULL_MAST * HULL_LENGTH ahead of the mast on the centreline, which is the
+ * boom angle st.heading - st.aoa off the main chord), and its chord at st.jib_aoa to the wind.
+ * Returns {tx, ty, ang}: tack, and jib chord angle relative to the main chord (rad, + = towards windward).
+ */
+export function jibPlacement(st) {
+  const boom = radians(st.heading - st.aoa);
+  const d = HULL_MAST * HULL_LENGTH;
+  return { tx: -d * Math.cos(boom), ty: d * Math.sin(boom), ang: radians(st.jib_aoa - st.aoa) };
+}
+
+/** Points along the jib's camber line in the main frame (main chords). */
+function jibPoints(st, n = 60) {
+  const { tx, ty, ang } = jibPlacement(st);
+  const cj = Math.cos(ang);
+  const sj = Math.sin(ang);
+  const pts = [];
+  for (let k = 0; k <= n; k++) {
+    const x = k / n;
+    const qx = x * JIB_CHORD;
+    const qy = meanLine(x, st.camber, st.draft)[0] * JIB_CHORD;
+    pts.push([tx + qx * cj + qy * sj, ty - qx * sj + qy * cj]);
+  }
+  return pts;
+}
+
+/**
+ * Slot and overlap of the jib: the smallest distance from the jib to the main (lee side of its camber line, or
+ * the mast; negative if the jib is to windward of the main or touches it), and how far the jib leech reaches
+ * behind the main luff. Both in main chords.
+ */
+export function jibSlot(st) {
+  const r = 0.5 * st.mast;
+  let slot = Infinity;
+  for (const [x, y] of jibPoints(st)) {
+    slot = Math.min(slot, Math.hypot(x, y) - r);
+    if (x >= 0.0 && x <= 1.0) {
+      const [yc, dy] = meanLine(x, st.camber, st.draft);
+      slot = Math.min(slot, (y - yc) / Math.sqrt(1 + dy * dy));
+    }
+  }
+  const pts = jibPoints(st, 1);
+  return { slot, overlap: pts[1][0] };
+}
+
+/** Largest jib angle of attack (deg) up to which, sheeting in from fully eased, the jib keeps JIB_MIN_SLOT. */
+export function jibAoaLimit(st) {
+  const s = Object.assign(Object.create(Object.getPrototypeOf(st)), st);
+  let last = null;
+  for (let a = -30.0; a <= 90.0; a += 0.25) {
+    s.jib_aoa = a;
+    if (jibSlot(s).slot < JIB_MIN_SLOT) return last === null ? 90.0 : last;
+    last = a;
+  }
+  return 90.0;
+}
 
 /** Everything the user can change. */
 export class State {
@@ -111,9 +179,7 @@ export class State {
     this.camber = 0.10;       // sail depth, fraction of chord
     this.draft = 0.45;        // position of max depth, fraction of chord from the luff
     this.mast = 0.05;         // mast diameter / chord
-    this.jib_gap = 0.05;      // slot width between jib leech and main / main chord
-    this.jib_overlap = 0.10;  // jib leech behind the main luff / main chord
-    this.jib_angle = -15.0;   // jib chord angle relative to the main chord, deg (best L/D at main AoA 12)
+    this.jib_aoa = JIB_AOA_DEFAULT;   // deg, between wind and jib chord; the jib tack is at the bow
     this.wind = 8.0;          // m/s
     this.width = 3.0;         // m, main chord ("sail width")
     this.height = 9.0;        // m, sail height (luff)
@@ -136,7 +202,7 @@ export class State {
 
   geometry() {
     return [this.shape, round(this.aoa, 3), round(this.camber, 4), round(this.draft, 4),
-            round(this.mast, 4), round(this.jib_gap, 4), round(this.jib_overlap, 4), round(this.jib_angle, 3)].join();
+            round(this.mast, 4), round(this.jib_aoa, 3), this.shape === JIB_MAIN ? round(this.heading, 3) : 0].join();
   }
 
   configLabel() {
@@ -146,9 +212,7 @@ export class State {
     }
     if (this.shape === MAST_SAIL || this.shape === JIB_MAIN) name += ` mast ${(this.mast * 100).toFixed(0)}%`;
     if (this.shape === JIB_MAIN) {
-      const ja = this.jib_angle.toFixed(0);
-      name += ` gap ${(this.jib_gap * 100).toFixed(0)}% ov ${(this.jib_overlap * 100).toFixed(0)}% ` +
-              `jib ${this.jib_angle >= 0 ? "+" : ""}${ja}deg`;
+      name += ` jib ${this.jib_aoa.toFixed(1)}deg heading ${this.heading.toFixed(0)}deg`;
     }
     return name;
   }
@@ -166,13 +230,12 @@ export class State {
     this.camber = clip(this.camber, 0.0, 0.20);
     this.draft = clip(this.draft, 0.25, 0.65);
     this.mast = clip(this.mast, 0.01, 0.12);
-    this.jib_gap = clip(this.jib_gap, 0.02, 0.25);
-    this.jib_overlap = clip(this.jib_overlap, -0.2, 0.4);
-    this.jib_angle = clip(this.jib_angle, -20.0, 15.0);
     this.wind = clip(this.wind, 1.0, 20.0);
     this.width = clip(this.width, 0.5, 10.0);
     this.height = clip(this.height, 1.0, 40.0);
     this.heading = clip(this.heading, 0.0, 180.0);
+    this.jib_aoa = clip(this.jib_aoa, -30.0, 90.0);
+    if (this.shape === JIB_MAIN) this.jib_aoa = Math.min(this.jib_aoa, jibAoaLimit(this));
     if (!(this.quality in QUALITY_CELLS)) this.quality = "medium";
     this.boundary = clip(Math.round(this.boundary), 0, BOUNDARY_LAYERS.length - 1);
     this.slowmo = clip(Math.round(this.slowmo), 0, SLOW_MOTION.length - 1);
