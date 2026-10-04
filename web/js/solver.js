@@ -5,7 +5,7 @@
 import {
   CYLINDER, CYLINDER_DIAMETER, DOMAIN_CHORDS, HULL_BEAM, HULL_LENGTH, HULL_MAST, HULL_POINTS, HULL_TRANSOM,
   HULL_WIDEST, LEE_SAMPLES, PIVOT_CHORDS, RE_PER_CELL2, SAIL, SIDE_SPONGE_CHORDS, SPONGE_CHORDS, TELLTALES, U_LAT,
-  WIND_FROM, jibPlacement,
+  WIND_FROM, jibPlacement, meanLine,
 } from "./config.js";
 import { LUTS } from "./luts.js";
 import { OUT_FORCE, OUT_LEE, OUT_RHO, OUT_SIZE, OUT_TT, PARAMS, TT_STRIDE, buildKernels } from "./shaders.js";
@@ -364,6 +364,19 @@ export class Solver {
     return [this.px - 0.5 * c * Math.cos(a), this.py + 0.5 * c * Math.sin(a)];
   }
 
+  /** Position (cells) and unit tangent at fraction xn along the main sail's camber line (as sail_frame). */
+  mainFrame(st, xn) {
+    const c = this.n;
+    const [yc, dy] = meanLine(xn, st.camber, st.draft);
+    const tn = Math.hypot(1.0, dy);
+    const a = radians(st.aoa);
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    const dx = xn * c - 0.5 * c;
+    return [this.px + dx * ca + yc * c * sa, this.py - dx * sa + yc * c * ca,
+            (ca + dy * sa) / tn, (-sa + dy * ca) / tn];
+  }
+
   /**
    * Dinghy outline in cells, as a closed polygon (bow, starboard side, transom, port side, bow).
    * Drawing only: the hull is not part of the flow (on a real boat it sits below the sail section).
@@ -438,6 +451,9 @@ export class Solver {
       pass.setBindGroup(0, this.draws.splat_tracers.group);
       pass.draw(6, this.nTracers);
     }
+    pass.setPipeline(this.draws.bodies.pipeline);       // sails and bodies on top of the smoke
+    pass.setBindGroup(0, this.draws.bodies.group);
+    pass.draw(3);
     pass.end();
   }
 }

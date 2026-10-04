@@ -28,7 +28,7 @@ export const START_KICK = 0.5;              // up-draft behind the body at the s
 export const BOUNDARY_LAYERS = ["Model size", "Full size (approx.)"];
 export const KAPPA = 0.41;              // von Karman constant
 export const B_LOG = 5.2;               // log-law intercept
-export const FS_MIXING = 1.5;           // near-wall mixing length = this * KAPPA * wall distance ...
+export const FS_MIXING = 1.2;           // near-wall mixing length = this * KAPPA * wall distance ...
 export const FS_MIXING_MAX = 0.03;      // ... up to this fraction of the chord
 export const FS_SLEEVE = 0.08;          // the extra mixing acts within this fraction of the chord of a wall
 export const FS_FORM_FACTOR = 2.0;      // drag estimate: form drag of attached flow = this x skin friction
@@ -47,7 +47,8 @@ export const AVERAGE_CHORDS = 5.0;      // averaging length before a point is ad
 export const JIB_CHORD = 0.7;           // jib chord as a fraction of the main chord
 export const JIB_AOA_DEFAULT = 5.0;     // jib angle of attack at the start (best L/D with the main at 12 deg, heading 30)
 export const JIB_MIN_SLOT = 0.02;       // the jib angle of attack stops where this slot (fraction of main chord) remains
-export const DRAW_THICKNESS = 0.01;     // drawn thickness of sails and plate (fraction of chord); they are simulated as zero
+export const SMOKE_OPACITY = 0.6;      // smoke dots are partly transparent: flow colours and sails show through
+export const DRAW_THICKNESS = 0.02;     // drawn thickness of sails and plate (fraction of chord); they are simulated as zero
 export const CYLINDER_DIAMETER = 0.4;   // cylinder diameter as a fraction of the chord
 export const HULL_LENGTH = 1.5;         // dinghy outline (drawing only): length / main chord, about Laser proportions
 export const HULL_BEAM = 0.32;          // beam / hull length
@@ -106,7 +107,7 @@ const round = (v, digits) => Number(v.toFixed(digits));
 const radians = (deg) => deg * Math.PI / 180;
 
 /** NACA 4-digit mean line: [y/c, dy/dx] at x/c = x for camber m at position p (as mean_line in shaders.js). */
-function meanLine(x, m, p) {
+export function meanLine(x, m, p) {
   if (m <= 0.0) return [0.0, 0.0];
   if (x < p) return [m / (p * p) * (2 * p * x - x * x), 2 * m / (p * p) * (p - x)];
   const q = (1 - p) ** 2;

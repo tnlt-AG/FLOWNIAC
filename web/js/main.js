@@ -8,11 +8,14 @@ import {
 } from "./config.js";
 import { initGPU } from "./gpu.js";
 import { PolarPlot } from "./polar.js";
-import { Averager, arrowGeometry, fullSizeDrag, playback, resultLines, results, tracerColor } from "./results.js";
+import {
+  Averager, arrowGeometry, fullSizeDrag, leechFlutter, playback, resultLines, results, tracerColor,
+} from "./results.js";
 import { Solver } from "./solver.js";
 import { Keys, Panel } from "./ui.js";
 
 const VIEW_KEYS = ["speed", "vorticity", "pressure", "smoke"];
+const MAIN_LEECH_TT = TELLTALES.findIndex(([sail, , side]) => sail === 1 && side === 0);
 
 function parseArgs() {
   const q = new URLSearchParams(location.search);
@@ -306,6 +309,12 @@ async function main() {
     } else {
       allowance = 0.0;
     }
+    // the previous frame's picture may still be drawing: wait for it here, so its time does not count as
+    // solver time (with a large picture on a slow GPU that made a step look 20x slower than it is, and the
+    // frames ran with the minimum of 2 steps while the GPU idled half the time)
+    let tDraw = performance.now();
+    await device.queue.onSubmittedWorkDone();
+    tDraw = (performance.now() - tDraw) / 1000;
     let tSolver = performance.now();
     sim.advance(enc, steps);
     const probes = { lee: sail, telltales: sail && st.telltales };
@@ -357,8 +366,12 @@ async function main() {
     const lines = resultLines(st, r, avg, sim, info, lee);
     if (performance.now() / 1000 < unstableUntil) lines.unshift("!! flow unstable: restarted");
     panel.render(lines);
-    front.draw(enc, st, st.arrows ? arrowGeometry(sim, st, r) : null,
-               probes.telltales ? sim.telltalePoints(out) : null);
+    let telltales = probes.telltales ? sim.telltalePoints(out) : null;
+    if (telltales && st.boundary && lee !== null) {           // full size: see leechFlutter
+      const ribbon = leechFlutter(sim, st, lee, performance.now() / 1000);
+      if (ribbon) telltales[MAIN_LEECH_TT] = ribbon;
+    }
+    front.draw(enc, st, st.arrows ? arrowGeometry(sim, st, r) : null, telltales);
 
     // steps per frame: aim for TARGET_FPS, but never let drawing eat more than 1/3 of the time
     const now = performance.now() / 1000;
@@ -375,7 +388,7 @@ async function main() {
       want = Math.min(want, 0.2 / tStep);          // keep at least ~5 frames per second
       stepsPerFrame = Math.trunc(Math.min(Math.max(0.7 * stepsPerFrame + 0.3 * want, 2), 2000));
     }
-    Object.assign(window.flowniac.timing, { stepsPerFrame, tSolver, tStep, overhead, dt });
+    Object.assign(window.flowniac.timing, { stepsPerFrame, tSolver, tStep, tDraw, overhead, dt });
   }
 
   async function loop() {

@@ -3,7 +3,8 @@
 
 import {
   AVERAGE_CHORDS, CYLINDER, ELEMENT_NAMES, FS_FORM_FACTOR, JIB_MAIN, MAST_SAIL, NACA0012, NACA2412, NU_AIR, PLATE,
-  QUALITY_CELLS, RHO_AIR, SETTLE_CHORDS, SHAPES, SPAN_EFFICIENCY, U_LAT, jibAoaLimit, jibSlot,
+  QUALITY_CELLS, RHO_AIR, SAIL_SHAPES, SETTLE_CHORDS, SHAPES, SPAN_EFFICIENCY, TELLTALE_LENGTH, TELLTALE_SEGMENTS,
+  U_LAT, jibAoaLimit, jibSlot,
 } from "./config.js";
 
 const radians = (deg) => deg * Math.PI / 180;
@@ -101,6 +102,34 @@ export function fullSizeDrag(st, cdSim, rhoLee, rhoWind, lee) {
   const cdf = 0.074 * re ** -0.2 * (fl + fw) / lee.length * arcLength(st) / st.refFraction();
   const a = att / lee.length;
   return cdf * (1.0 + FS_FORM_FACTOR * a) + cdSim * (1.0 - a);
+}
+
+/**
+ * Leech telltale of the main in the full-size boundary layer. There the strong near-wall mixing closes a
+ * trailing-edge separation again just before the leech, so the simulated air still leaves the leech cleanly and
+ * the telltale would stream aft. Instead, when the lee flow (lee: Solver.leeProfile) is reversed in the aft half
+ * of the main, the ribbon is drawn curling to leeward and fluttering, the more the larger the separated part, as
+ * on a real stalled leech. Returns the ribbon points (cells) or null (no separation: use the computed telltale).
+ */
+export function leechFlutter(sim, st, lee, time) {
+  if (!SAIL_SHAPES.includes(st.shape)) return null;
+  const aft = lee.slice(Math.floor(lee.length / 2));
+  const stall = aft.filter((v) => v < 0.0).length / aft.length;
+  if (stall <= 0.0) return null;
+  const k = Math.min(1.0, 1.5 * stall);
+  const [x0, y0, tx, ty] = sim.mainFrame(st, 1.0);
+  const nx = -ty;                                   // towards the lee side
+  const ny = tx;
+  const seg = TELLTALE_LENGTH * sim.n / TELLTALE_SEGMENTS;
+  let p = [x0 + tx, y0 + ty];                       // tied on just behind the leech, like the computed one
+  const pts = [p];
+  for (let s = 0; s < TELLTALE_SEGMENTS; s++) {
+    const wobble = Math.sin(9.0 * time + 1.3 * s) + 0.5 * Math.sin(23.0 * time + 2.1 * s) + 0.6 * (Math.random() - 0.5);
+    const phi = k * radians(40.0 + 18.0 * s + 25.0 * wobble);
+    p = [p[0] + seg * (Math.cos(phi) * tx + Math.sin(phi) * nx), p[1] + seg * (Math.cos(phi) * ty + Math.sin(phi) * ny)];
+    pts.push(p);
+  }
+  return pts;
 }
 
 /** All numbers shown to the user, from time-averaged 2D coefficients. */

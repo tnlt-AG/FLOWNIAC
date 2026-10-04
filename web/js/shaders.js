@@ -8,7 +8,8 @@
 import {
   B_LOG, CP_RANGE, CYLINDER, CYLINDER_DIAMETER, DRAW_THICKNESS, E, FS_MIXING, FS_MIXING_MAX, FS_SLEEVE, HULL_POINTS,
   JIB_CHORD, JIB_MAIN, KAPPA, LEE_SAMPLES, MAST_SAIL, NACA0012, NACA2412, OPP, PLATE, SAIL, SIGMA_SPONGE, SMAGORINSKY,
-  START_KICK, TAU_SPONGE, TELLTALES, TELLTALE_LENGTH, TELLTALE_SEGMENTS, U_LAT, VORTICITY_RANGE, W, WALL_DAMPING,
+  SMOKE_OPACITY, START_KICK, TAU_SPONGE, TELLTALES, TELLTALE_LENGTH, TELLTALE_SEGMENTS, U_LAT, VORTICITY_RANGE, W,
+  WALL_DAMPING,
 } from "./config.js";
 
 /** Uniform parameter block P, shared by all kernels: [name, type], 4 bytes each. */
@@ -88,6 +89,8 @@ const WALL_D: f32 = 0.5;                          // wall distance of a wall cel
 const JIB_CHORD: f32 = ${fl(JIB_CHORD)};
 const CYLINDER_DIAMETER: f32 = ${fl(CYLINDER_DIAMETER)};
 const DRAW_THICKNESS: f32 = ${fl(DRAW_THICKNESS)};
+const SMOKE_OPACITY: f32 = ${fl(SMOKE_OPACITY)};
+const SAIL_EDGE: f32 = 1.2;                       // dark rim of the drawn bodies, pixels
 const VORTICITY_RANGE: f32 = ${fl(VORTICITY_RANGE)};
 const CP_MIN: f32 = ${fl(CP_RANGE[0])};
 const CP_MAX: f32 = ${fl(CP_RANGE[1])};
@@ -353,6 +356,26 @@ fn lut_index(which: i32, t: f32) -> i32 {
   return which * 256 + i32(clamp(t, 0.0, 1.0) * 255.0);
 }
 `;
+
+// full-screen triangle, and picture pixel -> position in cells (x, y) and cells per pixel (z)
+const PICTURE_FS = /* wgsl */ `
+@vertex
+fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4f {
+  let xy = vec2f(f32((v << 1u) & 2u), f32(v & 2u));
+  return vec4f(xy * 2.0 - 1.0, 0.0, 1.0);
+}
+
+fn picture_cell(frag: vec2f) -> vec3f {
+  var sx = VW / P.fw;                               // cells per pixel (the same in both directions)
+  var u = frag.x / P.fw;                            // along the wind
+  var v = 1.0 - frag.y / P.fh;                      // across the wind
+  if (ROTATED) {                                    // wind from the top of the picture
+    sx = VW / P.fh;
+    u = frag.y / P.fh;
+    v = frag.x / P.fw;
+  }
+  return vec3f(VX0 + u * VW, VY0 + v * VH, sx);
+}`;
 
 // helpers that read a buffer: only included by the kernels that declare it
 const LOAD_FA = /* wgsl */ `
@@ -1062,11 +1085,10 @@ ${each(K9, (k) => `      fp[${k}] += sig_side * (fe2[${k}] - fp[${k}]);`)}
 /** Draw passes: the flow picture (compose) and the smoke particles (splat_tracers). */
 function renderKernels() {
   return {
-    // Draw the flow at screen resolution: colours interpolated between cells, the dinghy outline
-    // (P.hull != 0), and the bodies evaluated from their exact shape with 3x3 sub-samples (smooth,
-    // anti-aliased edges). Pixel (0, 0) is the top left corner of the picture.
+    // Draw the flow at screen resolution: colours interpolated between cells and the dinghy outline
+    // (P.hull != 0). Pixel (0, 0) is the top left corner of the picture.
     compose: {
-      uses: ["img", "bbox", "hull"], code: /* wgsl */ `
+      uses: ["img", "hull"], code: /* wgsl */ `
 fn img_bilinear(xi: f32, yi: f32) -> vec3f {
   let x = clamp(xi, 0.0, f32(NX) - 1.001);
   let y = clamp(yi, 0.0, f32(NY) - 1.001);
@@ -1076,19 +1098,6 @@ fn img_bilinear(xi: f32, yi: f32) -> vec3f {
   let fy = y - f32(j);
   return ((1.0 - fx) * (1.0 - fy) * img[ix(i, j)] + fx * (1.0 - fy) * img[ix(i + 1, j)]
         + (1.0 - fx) * fy * img[ix(i, j + 1)] + fx * fy * img[ix(i + 1, j + 1)]).xyz;
-}
-
-fn body_color(s: i32, view: i32) -> vec3f {
-  var col = vec3f(0.94, 0.94, 0.94);                // (main) sail / body
-  if (s == 2) {
-    col = vec3f(0.76, 0.85, 0.98);                  // jib
-  } else if (s == 3) {
-    col = vec3f(0.58, 0.58, 0.60);                  // mast
-  }
-  if (view == 2) {
-    col *= 0.3;                                     // dark bodies on the light pressure view
-  }
-  return col;
 }
 
 // anti-aliased dinghy outline (half width r pixels, dark rim) over colour col at picture pixel q
@@ -1110,35 +1119,51 @@ fn hull_blend(col_in: vec3f, q: vec2f, r: f32, view: i32) -> vec3f {
   return mix(col, core, clamp(r + 0.5 - d, 0.0, 1.0));
 }
 
-@vertex
-fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4f {
-  let xy = vec2f(f32((v << 1u) & 2u), f32(v & 2u));   // full-screen triangle
-  return vec4f(xy * 2.0 - 1.0, 0.0, 1.0);
-}
+${PICTURE_FS}
 
 @fragment
 fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
-  let fw = P.fw;
-  let fh = P.fh;
-  var sx = VW / fw;                                 // cells per pixel (the same in both directions)
-  var u = frag.x / fw;                              // along the wind
-  var v = 1.0 - frag.y / fh;                        // across the wind
-  if (ROTATED) {                                    // wind from the top of the picture
-    sx = VW / fh;
-    u = frag.y / fh;
-    v = frag.x / fw;
-  }
-  let x = VX0 + u * VW;
-  let y = VY0 + v * VH;
-  var col = img_bilinear(x, y);
+  let pc = picture_cell(frag.xy);
+  var col = img_bilinear(pc.x, pc.y);
   if (P.hull != 0) {
     let q = floor(frag.xy);
     if (q.x >= P.hb0 && q.y >= P.hb1 && q.x <= P.hb2 && q.y <= P.hb3) {
       col = hull_blend(col, frag.xy, P.hull_r, P.view);
     }
   }
-  let th = max(2.5 * sx, DRAW_THICKNESS * C);       // drawn sail thickness: >= 2.5 pixels
-  if (x > f32(bbox[0]) - 3.0 && x < f32(bbox[2]) + 3.0 && y > f32(bbox[1]) - 3.0 && y < f32(bbox[3]) + 3.0) {
+  return vec4f(col, 1.0);
+}`,
+    },
+
+    // The bodies over the flow and the smoke, from their exact shape: 3x3 sub-samples for smooth,
+    // anti-aliased edges, and a dark rim of SAIL_EDGE pixels (shape tested at offsets around the pixel)
+    // so they stand out on every view. Blended: transparent away from the bodies.
+    bodies: {
+      uses: ["bbox"], code: /* wgsl */ `
+${PICTURE_FS}
+
+fn body_color(s: i32, view: i32) -> vec3f {
+  var col = vec3f(0.15, 0.42, 0.95);                // (main) sail / body: blue, apart from the white smoke
+  if (s == 2) {
+    col = vec3f(0.45, 0.72, 1.0);                   // jib: lighter blue
+  } else if (s == 3) {
+    col = vec3f(0.58, 0.58, 0.60);                  // mast
+  }
+  if (view == 2) {
+    col *= 0.6;                                     // darker on the light pressure view
+  }
+  return col;
+}
+
+@fragment
+fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
+  let pc = picture_cell(frag.xy);
+  let x = pc.x;
+  let y = pc.y;
+  let sx = pc.z;
+  var out = vec4f(0.0);
+  let th = max(4.0 * sx, DRAW_THICKNESS * C);       // drawn sail thickness: >= 4 pixels
+  if (x > f32(bbox[0]) - 4.0 && x < f32(bbox[2]) + 4.0 && y > f32(bbox[1]) - 4.0 && y < f32(bbox[3]) + 4.0) {
     var cover = 0.0;
     var sid = 0;
     for (var su = 0; su < 3; su++) {
@@ -1151,11 +1176,28 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
         }
       }
     }
-    if (sid != 0) {
-      col = col * (1.0 - cover) + body_color(sid, P.view) * cover;
+    var rim = cover;
+    if (cover < 1.0) {
+      var hits = 0.0;
+      for (var k = 0; k < 8; k++) {
+        let ang = f32(k) * 0.785398163;
+        let s = body_at(x + SAIL_EDGE * sx * cos(ang), y + SAIL_EDGE * sx * sin(ang),
+                        P.shape, P.a, P.m, P.p, P.mast_r, P.jtx, P.jty, P.jang, th);
+        if (s != 0) {
+          hits += 1.0;
+          if (sid == 0) {
+            sid = s;
+          }
+        }
+      }
+      rim = max(cover, min(hits / 4.0, 1.0));
+    }
+    if (rim > 0.0) {
+      let col = (cover * body_color(sid, P.view) + (rim - cover) * vec3f(0.03, 0.03, 0.05)) / rim;
+      out = vec4f(col, rim);
     }
   }
-  return vec4f(col, 1.0);
+  return out;
 }`,
     },
 
@@ -1187,7 +1229,7 @@ fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) p: u32) -> DotOut 
 @fragment
 fn fs(d: DotOut) -> @location(0) vec4f {
   let cover = clamp(0.5 * P.dot + 0.5 - length(d.off), 0.0, 1.0);
-  return vec4f(P.smoke_r, P.smoke_g, P.smoke_b, cover);
+  return vec4f(P.smoke_r, P.smoke_g, P.smoke_b, SMOKE_OPACITY * cover);
 }`,
     },
   };
